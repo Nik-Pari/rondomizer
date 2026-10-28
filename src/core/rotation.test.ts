@@ -339,3 +339,57 @@ describe('краевые случаи', () => {
     expect(circlePartnerSet(result.state, byName(result.state, 'Ф1').id).size).toBe(0);
   });
 });
+
+describe('первый танец вечера', () => {
+  it('i) первый раунд: пары строго по порядку списков', () => {
+    const state = makeState(['Иван', 'Семён', 'Георг'], ['Алёна', 'Марина', 'Женя']);
+    const round = generateRound(state);
+    expect(validateRound(state, round)).toEqual([]);
+    const name = (id: string) => state.participants.find((p) => p.id === id)!.name;
+    expect(round.pairs.map((p) => `${name(p.leaderId)} — ${name(p.followerId)}`)).toEqual([
+      'Иван — Алёна',
+      'Семён — Марина',
+      'Георг — Женя',
+    ]);
+    expect(round.skipIds).toEqual([]);
+  });
+
+  it('j) первый раунд при перекосе ролей: лишние в конце списка пропускают', () => {
+    const state = makeState(['Иван', 'Семён', 'Георг', 'Пётр'], ['Алёна', 'Марина']);
+    const round = generateRound(state);
+    const name = (id: string) => state.participants.find((p) => p.id === id)!.name;
+    expect(round.pairs.map((p) => `${name(p.leaderId)} — ${name(p.followerId)}`)).toEqual([
+      'Иван — Алёна',
+      'Семён — Марина',
+    ]);
+    expect(round.skipIds.map(name).sort()).toEqual(['Георг', 'Пётр'].sort());
+    expect(validateRound(state, round)).toEqual([]);
+  });
+
+  it('k) после первого раунда включается обычная ротация без повторов', () => {
+    const result = simulate(
+      makeState(['Иван', 'Семён', 'Георг'], ['Алёна', 'Марина', 'Женя']),
+      4,
+    );
+    expect(result.metrics[0].skips.length).toBe(0);
+    for (const m of result.metrics.slice(1)) {
+      expect(m.bothRepeats).toBe(0);
+      expect(m.prevRepeats).toBe(0);
+    }
+  });
+
+  it('l) «Новый вечер» снова даёт детерминированный первый раунд', () => {
+    const result = simulate(
+      makeState(['Иван', 'Семён', 'Георг'], ['Алёна', 'Марина', 'Женя']),
+      3,
+    );
+    const fresh = startNewEvening(result.state, true, 2_000_000_000_000);
+    const round = generateRound(fresh);
+    const name = (id: string) => fresh.participants.find((p) => p.id === id)!.name;
+    expect(round.pairs.map((p) => `${name(p.leaderId)} — ${name(p.followerId)}`)).toEqual([
+      'Иван — Алёна',
+      'Семён — Марина',
+      'Георг — Женя',
+    ]);
+  });
+});

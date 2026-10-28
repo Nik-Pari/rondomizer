@@ -237,49 +237,62 @@ export function generateRound(state: AppState, now: number = Date.now()): Round 
     return empty(['Нет активных фоловеров — танцевать не с кем.']);
   }
 
-  const largerIsLeader = leaders.length >= followers.length;
-  const rows = largerIsLeader ? leaders : followers;
-  const smaller = largerIsLeader ? followers : leaders;
-  const n = rows.length;
-  const dummyCount = n - smaller.length;
-  const matrix: number[][] = [];
-
-  for (let i = 0; i < n; i += 1) {
-    const rowPerson = rows[i];
-    const row: number[] = [];
-    for (let j = 0; j < smaller.length; j += 1) {
-      const leader = largerIsLeader ? rowPerson : smaller[j];
-      const follower = largerIsLeader ? smaller[j] : rowPerson;
-      row.push(pairCost(stats, circles, roundNumber, leader, follower));
-    }
-    for (let d = 0; d < dummyCount; d += 1) {
-      row.push(skipCost(stats, rowPerson, roundNumber));
-    }
-    matrix.push(row);
-  }
-
-  const assignment = hungarian(matrix);
-  const pairs: Pair[] = [];
+  let pairs: Pair[] = [];
   const skipIds: string[] = [];
 
-  for (let i = 0; i < n; i += 1) {
-    const col = assignment[i];
-    if (col < 0) {
-      // Теоретически недостижимо для квадратной матрицы, но не роняем вечер.
-      skipIds.push(rows[i].id);
-      continue;
+  if (state.history.length === 0) {
+    // Первый танец вечера — детерминированный: i-й лидер с i-m фоловером
+    // в порядке списков (как добавлены/загружены). Лишающиеся роли пропускают.
+    const k = Math.min(leaders.length, followers.length);
+    for (let i = 0; i < k; i += 1) {
+      pairs.push({ leaderId: leaders[i].id, followerId: followers[i].id });
     }
-    if (col < smaller.length) {
-      const leader = largerIsLeader ? rows[i] : smaller[col];
-      const follower = largerIsLeader ? smaller[col] : rows[i];
-      pairs.push({ leaderId: leader.id, followerId: follower.id });
-    } else {
-      skipIds.push(rows[i].id);
-    }
-  }
+    for (let i = k; i < leaders.length; i += 1) skipIds.push(leaders[i].id);
+    for (let i = k; i < followers.length; i += 1) skipIds.push(followers[i].id);
+  } else {
+    const largerIsLeader = leaders.length >= followers.length;
+    const rows = largerIsLeader ? leaders : followers;
+    const smaller = largerIsLeader ? followers : leaders;
+    const n = rows.length;
+    const dummyCount = n - smaller.length;
+    const matrix: number[][] = [];
 
-  // Сортируем для предсказуемого отображения и тестов.
-  pairs.sort((a, b) => a.leaderId.localeCompare(b.leaderId));
+    for (let i = 0; i < n; i += 1) {
+      const rowPerson = rows[i];
+      const row: number[] = [];
+      for (let j = 0; j < smaller.length; j += 1) {
+        const leader = largerIsLeader ? rowPerson : smaller[j];
+        const follower = largerIsLeader ? smaller[j] : rowPerson;
+        row.push(pairCost(stats, circles, roundNumber, leader, follower));
+      }
+      for (let d = 0; d < dummyCount; d += 1) {
+        row.push(skipCost(stats, rowPerson, roundNumber));
+      }
+      matrix.push(row);
+    }
+
+    const assignment = hungarian(matrix);
+    pairs = [];
+
+    for (let i = 0; i < n; i += 1) {
+      const col = assignment[i];
+      if (col < 0) {
+        // Теоретически недостижимо для квадратной матрицы, но не роняем вечер.
+        skipIds.push(rows[i].id);
+        continue;
+      }
+      if (col < smaller.length) {
+        const leader = largerIsLeader ? rows[i] : smaller[col];
+        const follower = largerIsLeader ? smaller[col] : rows[i];
+        pairs.push({ leaderId: leader.id, followerId: follower.id });
+      } else {
+        skipIds.push(rows[i].id);
+      }
+    }
+
+    // Сортируем для предсказуемого отображения и тестов.
+    pairs.sort((a, b) => a.leaderId.localeCompare(b.leaderId));
+  }
   const { nameById } = participantMaps(state.participants);
   const name = (id: string) => nameById.get(id) ?? 'неизвестный';
 
