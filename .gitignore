@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-single/
+release/
+
+# локальные настройки и мусор
+.env
+.env.*
+!.env.example
+*.local
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# тестовые скриншоты
+screens/
