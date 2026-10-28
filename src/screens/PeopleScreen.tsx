@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { AppStore } from '../useAppStore';
 import type { Participant, ParticipantStatus, Role } from '../core/types';
 import { ROLE_LABEL, ROLE_LABEL_PLURAL, STATUS_LABEL } from '../core/types';
@@ -27,6 +27,14 @@ export function PeopleScreen({ store }: PeopleScreenProps) {
   const [bulkText, setBulkText] = useState('');
   const [bulkRole, setBulkRole] = useState<Role>('follower');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const addCardRef = useRef<HTMLFormElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const quickAdd = (value: Role) => {
+    setRole(value);
+    addCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    nameInputRef.current?.focus({ preventScroll: true });
+  };
 
   const selected = state.participants.find((participant) => participant.id === selectedId) ?? null;
   useEffect(() => {
@@ -98,8 +106,9 @@ export function PeopleScreen({ store }: PeopleScreenProps) {
     const met = personStats?.circleMet ?? 0;
     const total = personStats?.circleTotal ?? 0;
     const percent = total > 0 ? Math.round((met / total) * 100) : 0;
+    const latecomer = participant.status === 'active' && participant.joinedRound > 1 && dances === 0;
     const lagging =
-      participant.status === 'active' && stats.maxDances[participant.role] - dances >= 2;
+      participant.status === 'active' && !latecomer && stats.maxDances[participant.role] - dances >= 2;
     return (
       <button
         type="button"
@@ -111,6 +120,7 @@ export function PeopleScreen({ store }: PeopleScreenProps) {
         <span className="person-main">
           <span className="person-name-line">
             <span className="person-name">{participant.name}</span>
+            {latecomer ? <span className="badge badge-ok">новенький · ждёт танец</span> : null}
             {lagging ? <span className="badge badge-warn">догоняет</span> : null}
             {participant.status !== 'active' ? (
               <span className={`badge badge-${statusClass(participant.status)}`}>
@@ -153,7 +163,7 @@ export function PeopleScreen({ store }: PeopleScreenProps) {
         </div>
       </div>
 
-      <form className="card add-card" onSubmit={submitAdd}>
+      <form className="card add-card" onSubmit={submitAdd} ref={addCardRef}>
         <div className="card-head">
           <h2>Добавить участника</h2>
           <button
@@ -185,6 +195,7 @@ export function PeopleScreen({ store }: PeopleScreenProps) {
             placeholder="Имя участника"
             onChange={(event) => setName(event.target.value)}
             autoComplete="off"
+            ref={nameInputRef}
           />
           <button type="submit" className="btn btn-primary" disabled={!name.trim()}>
             <IconPlus size={18} />
@@ -250,6 +261,15 @@ export function PeopleScreen({ store }: PeopleScreenProps) {
           <div className="section-heading">
             <h2>Лидеры</h2>
             <span className="counter">{leaders.length}</span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-small section-add"
+              onClick={() => quickAdd('leader')}
+              aria-label="Добавить лидера"
+            >
+              <IconPlus size={14} />
+              Добавить
+            </button>
           </div>
           <div className="people-list">{leaders.map(renderRow)}</div>
         </section>
@@ -260,6 +280,15 @@ export function PeopleScreen({ store }: PeopleScreenProps) {
           <div className="section-heading">
             <h2>Фоловеры</h2>
             <span className="counter">{followers.length}</span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-small section-add"
+              onClick={() => quickAdd('follower')}
+              aria-label="Добавить фоловера"
+            >
+              <IconPlus size={14} />
+              Добавить
+            </button>
           </div>
           <div className="people-list">{followers.map(renderRow)}</div>
         </section>
@@ -277,6 +306,7 @@ export function PeopleScreen({ store }: PeopleScreenProps) {
 
       <p className="footnote">
         Нажмите на человека, чтобы переименовать, сменить роль, отметить отсутствие или удалить.
+        Добавленные в середине вечера потанцуют первыми же в ближайшем раунде.
       </p>
 
       {bulkOpen ? (

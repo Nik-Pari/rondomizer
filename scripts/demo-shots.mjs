@@ -12,6 +12,8 @@ mkdirSync(OUT_DIR, { recursive: true });
 
 const leaders = ['Артём', 'Владислав', 'Дмитрий', 'Максим', 'Николай', 'Сергей', 'Андрей', 'Кирилл'];
 const followers = ['Анна', 'Мария', 'Ольга', 'Полина', 'Светлана', 'Дарья', 'Елена', 'Виктория'];
+// последние двое «пришли» только к 4-му раунду — демо-подсветка опоздавших
+const lateSet = new Set(['Елена', 'Виктория']);
 
 const now = Date.now();
 const participants = [];
@@ -19,7 +21,14 @@ leaders.forEach((name, i) =>
   participants.push({ id: `l${i + 1}`, name, role: 'leader', status: 'active', createdAt: now - 4 * 3600e3, joinedRound: 1 }),
 );
 followers.forEach((name, i) =>
-  participants.push({ id: `f${i + 1}`, name, role: 'follower', status: 'active', createdAt: now - 4 * 3600e3, joinedRound: 1 }),
+  participants.push({
+    id: `f${i + 1}`,
+    name,
+    role: 'follower',
+    status: 'active',
+    createdAt: lateSet.has(name) ? now - 20 * 60e3 : now - 4 * 3600e3,
+    joinedRound: lateSet.has(name) ? 4 : 1,
+  }),
 );
 
 // Круговая ротация: в раунде r лидер i танцует с фолловером (i + r) % n.

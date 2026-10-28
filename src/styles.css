@@ -622,6 +622,10 @@ h2 {
   text-transform: uppercase;
 }
 
+.section-add {
+  margin-left: auto;
+}
+
 .counter {
   display: inline-flex;
   align-items: center;
