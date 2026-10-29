@@ -6,10 +6,9 @@ import {
   type Role,
   type Round,
   type Stats,
-  oppositeRole,
   pairKey,
 } from './types';
-import { activeParticipants, circleOf, computeStats } from './stats';
+import { activeOppositeSets, activeParticipants, computeStats } from './stats';
 
 /* ------------------------------------------------------------------------- */
 /*  Веса стоимости                                                            */
@@ -29,14 +28,22 @@ import { activeParticipants, circleOf, computeStats } from './stats';
  *
  * Стоимость «посадить участника P» (фиктивная колонка/строка в матрице):
  *   1_000_000_000 × max(0, (номер раунда − 1) − танцев у P)
- *   + 400, если P пропустил предыдущий раунд
- *   − 1 × min(45, сколько раундов прошло с последнего пропуска)
+ *   + 60_000, если P пропустил предыдущий раунд (пропуск два подряд — крайне плохо)
+ *   − 1_000 × min(45, сколько раундов прошло с последнего пропуска)
+ *   − 40_000 за каждый пропуск в текущем круге
  *
- * 1e9 за один «недоданс» гарантированно больше суммы всех попарных штрафов
+ * Вес 1e9 за один «недоданс» гарантированно больше суммы всех попарных штрафов
  * (даже 100 пар × ~1.1e6 ≈ 1.1e8). Поэтому равенство числа танцев — строго
  * главный приоритет, а повтор в круге — уже следующий.
  *
- * Вес recency (1 за раунд, максимум 45) меньше together (50 за танец),
+ * Вес «ожидания» (1_000 за раунд с последнего пропуска, плюс штраф за пропуски
+ * в текущем круге) заметно больше попарных тай-брейков (together 50, recency 45),
+ * но меньше prevPartner (100_000) и повтора в круге (250_000): при равном числе
+ * танцев в пропуск всегда уйдёт тот, кто ждёт дольше всех, а тот, кто пропускал
+ * в этом круге недавно, — в последнюю очередь. Это выполняет правило
+ * «минимальный промежуток между выступлениями».
+ *
+ * Вес recency пар (1 за раунд, максимум 45) меньше together (50 за танец),
  * поэтому «никогда не танцевали» всегда дешевле, чем «танцевали один раз
  * очень давно»: давность — только тай-брейк при равном числе танцев.
  */
@@ -49,9 +56,10 @@ export const COST = {
   recencyPerRound: 1,
   recencyCap: 45,
   jitter: 10,
-  skipConsecutive: 400,
-  skipRecencyPerRound: 1,
+  skipConsecutive: 60_000,
+  skipRecencyPerRound: 1_000,
   skipRecencyCap: 45,
+  skipCirclePenalty: 40_000,
 } as const;
 
 /* ------------------------------------------------------------------------- */
@@ -143,12 +151,90 @@ export function hungarian(cost: number[][]): number[] {
   return assignment;
 }
 
-function circleSets(state: AppState): Map<string, Set<string>> {
-  const result = new Map<string, Set<string>>();
-  for (const p of state.participants) {
-    result.set(p.id, new Set(circleOf(state.circles, p.id).partners));
+interface CircleReplay {
+  circles: CircleMap;
+  /** Сколько раз участник пропускал в текущем (ещё не завершённом) круге. */
+  skipsInCircle: Map<string, number>;
+}
+
+/**
+ * Пересчитывает круги из истории раундов — единый источник правды.
+ *
+ * Круг считается по ТЕКУЩЕМУ активному составу противоположной роли:
+ * после ухода/возвращения людей номера и прогресс пересчитываются заново,
+ * поэтому у всех участников с одинаковым числом танцев всегда согласованный
+ * прогресс круга (это чинит баг «у всех 3/7, а у одного 2/7»).
+ *
+ * Для участников с circleResetRound (смена роли) история до этого раунда не учитывается.
+ */
+export function replayCircles(state: AppState, withSkips: boolean): CircleReplay {
+  const opposite = activeOppositeSets(state);
+  const required: Record<Role, Set<string>> = { leader: opposite.follower, follower: opposite.leader };
+  const byId = new Map(state.participants.map((p) => [p.id, p]));
+
+  interface Acc {
+    partners: Set<string>;
+    number: number;
+    skips: number;
   }
-  return result;
+  const acc = new Map<string, Acc>();
+  for (const p of state.participants) {
+    acc.set(p.id, { partners: new Set(), number: 1, skips: 0 });
+  }
+
+  for (const round of state.history) {
+    for (const pair of round.pairs) {
+      const l = acc.get(pair.leaderId);
+      const f = acc.get(pair.followerId);
+      const lPerson = byId.get(pair.leaderId);
+      const fPerson = byId.get(pair.followerId);
+      if (l && lPerson && round.number >= (lPerson.circleResetRound ?? 1)) {
+        l.partners.add(pair.followerId);
+      }
+      if (f && fPerson && round.number >= (fPerson.circleResetRound ?? 1)) {
+        f.partners.add(pair.leaderId);
+      }
+    }
+    if (withSkips) {
+      for (const id of round.skipIds) {
+        const person = byId.get(id);
+        const a = acc.get(id);
+        if (a && person && round.number >= (person.circleResetRound ?? 1)) a.skips += 1;
+      }
+    }
+    for (const p of state.participants) {
+      const a = acc.get(p.id);
+      const need = required[p.role];
+      if (!a || need.size === 0) continue;
+      let done = a.partners.size >= need.size;
+      if (done) {
+        for (const id of need) {
+          if (!a.partners.has(id)) {
+            done = false;
+            break;
+          }
+        }
+      }
+      if (done) {
+        a.partners = new Set();
+        a.number += 1;
+        a.skips = 0;
+      }
+    }
+  }
+
+  const circles: CircleMap = {};
+  const skipsInCircle = new Map<string, number>();
+  for (const [id, a] of acc) {
+    circles[id] = { partners: [...a.partners], number: a.number };
+    skipsInCircle.set(id, a.skips);
+  }
+  return { circles, skipsInCircle };
+}
+
+/** Состояние кругов, вычисленное из истории (согласовано с текущим составом). */
+export function deriveCircles(state: AppState): CircleMap {
+  return replayCircles(state, false).circles;
 }
 
 function pairCost(
@@ -178,7 +264,12 @@ function pairCost(
   return cost;
 }
 
-function skipCost(stats: Stats, participant: Participant, roundNumber: number): number {
+function skipCost(
+  stats: Stats,
+  participant: Participant,
+  roundNumber: number,
+  skippedThisCircle = 0,
+): number {
   const st = stats.byId.get(participant.id);
   const dances = st?.dances ?? 0;
   const lastSkip = st?.lastSkipRound ?? null;
@@ -188,6 +279,7 @@ function skipCost(stats: Stats, participant: Participant, roundNumber: number): 
   let cost = COST.fairPerDance * behind;
   if (lastSkip === roundNumber - 1) cost += COST.skipConsecutive;
   cost -= COST.skipRecencyPerRound * roundsSince;
+  cost -= COST.skipCirclePenalty * skippedThisCircle;
   return cost;
 }
 
@@ -213,7 +305,10 @@ export function generateRound(state: AppState, now: number = Date.now()): Round 
   const followers = activeParticipants(state).filter((p) => p.role === 'follower');
   const roundNumber = state.nextRoundNumber;
   const stats = computeStats(state);
-  const circles = circleSets(state);
+  const replay = replayCircles(state, true);
+  const circles = new Map<string, Set<string>>(
+    Object.entries(replay.circles).map(([id, c]) => [id, new Set(c.partners)]),
+  );
   const warnings: string[] = [];
   const activeIds = [...leaders, ...followers].map((p) => p.id);
 
@@ -266,7 +361,7 @@ export function generateRound(state: AppState, now: number = Date.now()): Round 
         row.push(pairCost(stats, circles, roundNumber, leader, follower));
       }
       for (let d = 0; d < dummyCount; d += 1) {
-        row.push(skipCost(stats, rowPerson, roundNumber));
+        row.push(skipCost(stats, rowPerson, roundNumber, replay.skipsInCircle.get(rowPerson.id) ?? 0));
       }
       matrix.push(row);
     }
@@ -359,131 +454,103 @@ export interface ConfirmResult {
 }
 
 export function confirmRound(state: AppState, round: Round, now: number = Date.now()): ConfirmResult {
-  const circles = cloneCircles(state.circles);
   const before = cloneCircles(state.circles);
-  const byId = new Map(state.participants.map((p) => [p.id, p]));
-
-  for (const pair of round.pairs) {
-    const leader = byId.get(pair.leaderId);
-    const follower = byId.get(pair.followerId);
-    if (!leader || !follower) continue;
-    circles[leader.id] ??= { partners: [], number: 1 };
-    circles[follower.id] ??= { partners: [], number: 1 };
-    if (!circles[leader.id].partners.includes(follower.id)) circles[leader.id].partners.push(follower.id);
-    if (!circles[follower.id].partners.includes(leader.id)) circles[follower.id].partners.push(leader.id);
-  }
-
-  const active = activeParticipants(state);
-  const activeOpposite: Record<Role, Set<string>> = { leader: new Set(), follower: new Set() };
-  for (const p of active) {
-    if (p.role === 'leader') activeOpposite.leader.add(p.id);
-    else activeOpposite.follower.add(p.id);
-  }
-
-  const completed: Participant[] = [];
-  for (const p of active) {
-    const st = circles[p.id] ?? (circles[p.id] = { partners: [], number: 1 });
-    const required = activeOpposite[oppositeRole(p.role)];
-    if (required.size === 0) continue;
-    const danced = new Set(st.partners);
-    let done = true;
-    for (const id of required) {
-      if (!danced.has(id)) {
-        done = false;
-        break;
-      }
-    }
-    if (done) {
-      st.partners = [];
-      st.number += 1;
-      completed.push(p);
-    }
-  }
-
   const confirmed: Round = {
     ...round,
-    pairs: round.pairs.map((p) => ({ ...p })),
+    pairs: round.pairs.map((p) => ({ ...p, confirmedAt: p.confirmedAt ?? now })),
     skipIds: [...round.skipIds],
     activeIds: [...round.activeIds],
     warnings: [...round.warnings],
     confirmedAt: now,
   };
 
+  const next: AppState = {
+    ...state,
+    history: [...state.history, confirmed],
+    pending: null,
+    nextRoundNumber: round.number + 1,
+    updatedAt: now,
+  };
+  const circles = deriveCircles(next);
+
+  const completed: Participant[] = [];
+  for (const p of next.participants) {
+    if (p.status !== 'active') continue;
+    if ((circles[p.id]?.number ?? 1) > (before[p.id]?.number ?? 1)) completed.push(p);
+  }
+
   return {
-    state: {
-      ...state,
-      history: [...state.history, confirmed],
-      pending: null,
-      circles,
-      undo: { round: confirmed, circles: before },
-      nextRoundNumber: round.number + 1,
-      updatedAt: now,
-    },
+    state: { ...next, circles, undo: { round: confirmed, circles: before } },
     completed,
   };
+}
+
+/**
+ * Подтверждает выбранные пары черновика. Если подтверждены все пары — раунд
+ * уходит в историю (confirmRound), иначе возвращается обновлённый черновик.
+ */
+export function confirmPairs(
+  state: AppState,
+  round: Round,
+  indices: number[],
+  now: number = Date.now(),
+): ConfirmResult {
+  const selected = new Set(indices);
+  const pairs = round.pairs.map((p, i) =>
+    selected.has(i) && p.confirmedAt == null ? { ...p, confirmedAt: now } : { ...p },
+  );
+  const allConfirmed = pairs.length > 0 && pairs.every((p) => p.confirmedAt != null);
+  const marked: Round = {
+    ...round,
+    pairs,
+    confirmedAt: allConfirmed ? now : null,
+  };
+  if (allConfirmed) return confirmRound(state, marked, now);
+  return { state: setPending(state, marked, now), completed: [] };
+}
+
+/** Убирает неподтверждённую пару из раунда: оба участника идут в пропуск. */
+export function movePairToSkip(round: Round, index: number): Round {
+  const pair = round.pairs[index];
+  if (!pair || pair.confirmedAt != null) return round;
+  const pairs = round.pairs.filter((_, i) => i !== index).map((p) => ({ ...p }));
+  const skipIds = [...round.skipIds];
+  for (const id of [pair.leaderId, pair.followerId]) {
+    if (!skipIds.includes(id)) skipIds.push(id);
+  }
+  return { ...round, pairs, skipIds, confirmedAt: null };
 }
 
 export function undoLastRound(state: AppState, now: number = Date.now()): AppState {
   if (!state.undo) return state;
   const last = state.history[state.history.length - 1];
   if (!last || last.number !== state.undo.round.number) return state;
-  return {
+  const next: AppState = {
     ...state,
     history: state.history.slice(0, -1),
-    circles: cloneCircles(state.undo.circles),
+    circles: {},
     pending: null,
     undo: null,
     nextRoundNumber: state.undo.round.number,
     updatedAt: now,
   };
+  return { ...next, circles: deriveCircles(next) };
 }
 
 /**
- * Пересчитывает завершённость кругов по текущему активному составу.
- * Вызывается после смены статуса/роли/удаления участника.
+ * Пересчитывает круги по текущему активному составу (функция истории — deriveCircles).
+ * Вызывается после смены статуса/роли/удаления участника и при загрузке состояния.
  */
 export function reconcileCircles(
   state: AppState,
   now: number = Date.now(),
 ): { state: AppState; completed: Participant[] } {
-  const circles = cloneCircles(state.circles);
-  let changed = false;
-  for (const p of state.participants) {
-    if (!circles[p.id]) {
-      circles[p.id] = { partners: [], number: 1 };
-      changed = true;
-    }
-  }
-
-  const active = activeParticipants(state);
-  const activeOpposite: Record<Role, Set<string>> = { leader: new Set(), follower: new Set() };
-  for (const p of active) {
-    if (p.role === 'leader') activeOpposite.leader.add(p.id);
-    else activeOpposite.follower.add(p.id);
-  }
-
+  const circles = deriveCircles(state);
   const completed: Participant[] = [];
-  for (const p of active) {
-    const st = circles[p.id];
-    const required = activeOpposite[oppositeRole(p.role)];
-    if (!st || required.size === 0) continue;
-    const danced = new Set(st.partners);
-    let done = true;
-    for (const id of required) {
-      if (!danced.has(id)) {
-        done = false;
-        break;
-      }
-    }
-    if (done) {
-      st.partners = [];
-      st.number += 1;
-      completed.push(p);
-      changed = true;
-    }
+  for (const p of state.participants) {
+    if (p.status !== 'active') continue;
+    if ((circles[p.id]?.number ?? 1) > (state.circles[p.id]?.number ?? 1)) completed.push(p);
   }
-
-  if (!changed) return { state, completed: [] };
   return { state: { ...state, circles, updatedAt: now }, completed };
 }
 
@@ -555,6 +622,9 @@ export function swapInRound(state: AppState, round: Round, aId: string, bId: str
   const sb = find(bId);
   if (!sa || !sb) return round;
   if (sa.kind === 'skip' && sb.kind === 'skip') return round;
+  const pairLocked = (slot: Slot): boolean =>
+    slot.kind !== 'skip' && pairs[slot.index].confirmedAt != null;
+  if (pairLocked(sa) || pairLocked(sb)) return round;
 
   const put = (slot: Slot, id: string) => {
     if (slot.kind === 'leader') pairs[slot.index].leaderId = id;
@@ -591,6 +661,7 @@ export function startNewEvening(state: AppState, allActive: boolean, now: number
     ...p,
     status: allActive ? ('active' as const) : p.status,
     joinedRound: 1,
+    circleResetRound: undefined,
   }));
   const circles: CircleMap = {};
   for (const p of participants) circles[p.id] = { partners: [], number: 1 };

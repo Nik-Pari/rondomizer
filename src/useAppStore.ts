@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   confirmRound,
+  confirmPairs,
   emptyAppState,
   generateRound,
+  movePairToSkip,
   startNewEvening,
   undoLastRound,
   validateRound,
@@ -57,6 +59,8 @@ export interface AppStore {
   pendingErrors: string[];
   generate: () => void;
   confirm: () => void;
+  confirmPairsAt: (indices: number[]) => void;
+  pairToSkip: (index: number) => void;
   undo: () => void;
   discard: () => void;
   editPending: (round: Round) => void;
@@ -147,6 +151,37 @@ export function useAppStore(notify: Notify): AppStore {
       notify(`Круг завершён: ${namesLabel(result.completed)}`, 'info');
     }
   }, [state, notify]);
+
+  const confirmPairsAt = useCallback(
+    (indices: number[]) => {
+      const pending = state.pending;
+      if (!pending || indices.length === 0) return;
+      const errors = validateRound(state, pending);
+      if (errors.length > 0) {
+        notify(errors[0], 'error');
+        return;
+      }
+      const result = confirmPairs(state, pending, indices);
+      setState(result.state);
+      if (result.state.pending === null) {
+        notify(`Раунд ${pending.number} подтверждён`, 'success');
+        if (result.completed.length > 0) {
+          notify(`Круг завершён: ${namesLabel(result.completed)}`, 'info');
+        }
+      }
+    },
+    [state, notify],
+  );
+
+  const pairToSkip = useCallback(
+    (index: number) => {
+      const pending = state.pending;
+      if (!pending) return;
+      const next = movePairToSkip(pending, index);
+      if (next !== pending) setState(setPending(state, next));
+    },
+    [state],
+  );
 
   const undo = useCallback(() => {
     if (!state.undo) {
@@ -268,6 +303,8 @@ export function useAppStore(notify: Notify): AppStore {
     pendingErrors,
     generate,
     confirm,
+    confirmPairsAt,
+    pairToSkip,
     undo,
     discard,
     editPending,

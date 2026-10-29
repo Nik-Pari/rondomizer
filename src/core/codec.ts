@@ -1,4 +1,5 @@
 import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string';
+import { deriveCircles } from './rotation';
 import {
   type AppState,
   type CircleMap,
@@ -14,7 +15,7 @@ export const SNAPSHOT_HASH_PREFIX = '#data=';
 export const MAX_QR_URL_LENGTH = 1800;
 
 export interface SnapshotPayload {
-  v: 2;
+  v: 3;
   participants: Participant[];
   history: Round[];
   pending: Round | null;
@@ -26,7 +27,7 @@ export interface SnapshotPayload {
 
 export function toPayload(state: AppState, savedAt: number = Date.now()): SnapshotPayload {
   return {
-    v: 2,
+    v: 3,
     participants: state.participants,
     history: state.history,
     pending: state.pending,
@@ -95,22 +96,35 @@ function parseParticipant(value: unknown): Participant | null {
     status: value.status,
     createdAt: typeof value.createdAt === 'number' ? value.createdAt : 0,
     joinedRound: typeof value.joinedRound === 'number' ? value.joinedRound : 1,
+    circleResetRound:
+      typeof value.circleResetRound === 'number' && value.circleResetRound >= 1
+        ? Math.round(value.circleResetRound)
+        : undefined,
   };
 }
 
-function parsePair(value: unknown): Pair | null {
+function parsePair(value: unknown, defaultConfirmedAt: number | null): Pair | null {
   if (!isRecord(value)) return null;
   if (typeof value.leaderId !== 'string' || typeof value.followerId !== 'string') return null;
-  return { leaderId: value.leaderId, followerId: value.followerId };
+  const confirmedAt =
+    'confirmedAt' in value && value.confirmedAt != null
+      ? typeof value.confirmedAt === 'number'
+        ? value.confirmedAt
+        : null
+      : defaultConfirmedAt;
+  const pair: Pair = { leaderId: value.leaderId, followerId: value.followerId };
+  if (confirmedAt != null) pair.confirmedAt = confirmedAt;
+  return pair;
 }
 
 function parseRound(value: unknown): Round | null {
   if (!isRecord(value)) return null;
   if (typeof value.number !== 'number' || !Number.isFinite(value.number)) return null;
+  const roundConfirmedAt = typeof value.confirmedAt === 'number' ? value.confirmedAt : null;
   const pairsRaw = Array.isArray(value.pairs) ? value.pairs : [];
   const pairs: Pair[] = [];
   for (const item of pairsRaw) {
-    const pair = parsePair(item);
+    const pair = parsePair(item, roundConfirmedAt);
     if (pair) pairs.push(pair);
   }
   const stringArray = (input: unknown): string[] =>
@@ -121,7 +135,7 @@ function parseRound(value: unknown): Round | null {
     skipIds: stringArray(value.skipIds),
     activeIds: stringArray(value.activeIds),
     generatedAt: typeof value.generatedAt === 'number' ? value.generatedAt : 0,
-    confirmedAt: typeof value.confirmedAt === 'number' ? value.confirmedAt : null,
+    confirmedAt: roundConfirmedAt,
     warnings: stringArray(value.warnings),
   };
 }
@@ -180,7 +194,7 @@ export function stateFromSnapshot(raw: unknown): AppState | null {
   const maxHistory = history.reduce((max, r) => Math.max(max, r.number), 0);
   const nextFromRaw = typeof raw.nextRoundNumber === 'number' ? Math.round(raw.nextRoundNumber) : 0;
 
-  return {
+  const state: AppState = {
     version: 2,
     participants,
     history,
@@ -191,4 +205,6 @@ export function stateFromSnapshot(raw: unknown): AppState | null {
     eveningStartedAt: typeof raw.eveningStartedAt === 'number' ? raw.eveningStartedAt : Date.now(),
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
   };
+  // Круги всегда пересчитываем из истории — снимок мог быть сохранён со «съехавшим» прогрессом.
+  return { ...state, circles: deriveCircles(state) };
 }

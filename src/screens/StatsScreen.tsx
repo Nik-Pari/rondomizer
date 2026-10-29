@@ -66,6 +66,36 @@ export function StatsScreen({ store }: StatsScreenProps) {
     [state.participants, stats],
   );
 
+  /** Медиана числа танцев по каждому столбцу (фолловеру) матрицы. */
+  const columnMedians = useMemo(() => {
+    const medians = new Map<string, number>();
+    for (const follower of matrixFollowers) {
+      const values = matrixLeaders
+        .map((leader) => stats.pairCounts.get(pairKey(leader.id, follower.id)) ?? 0)
+        .sort((a, b) => a - b);
+      if (values.length > 0) medians.set(follower.id, values[Math.floor((values.length - 1) / 2)]);
+    }
+    return medians;
+  }, [matrixLeaders, matrixFollowers, stats]);
+
+  const matrixCellClass = (value: number, median: number): string => {
+    if (value === 0) return 'cell-red';
+    if (value > median) return 'cell-green';
+    if (value === median) return 'cell-blue';
+    return 'cell-red';
+  };
+
+  /** Номера участников по спискам ролей — как в «первом танце» и презентации. */
+  const numbers = useMemo(() => {
+    const leaderNo = new Map<string, number>();
+    const followerNo = new Map<string, number>();
+    for (const p of state.participants) {
+      if (p.role === 'leader') leaderNo.set(p.id, leaderNo.size + 1);
+      else followerNo.set(p.id, followerNo.size + 1);
+    }
+    return { leaderNo, followerNo };
+  }, [state.participants]);
+
   const renderActiveTable = (people: Participant[], role: Role) => {
     if (people.length === 0) return <p className="muted">Нет активных {ROLE_LABEL_PLURAL[role].toLowerCase()}.</p>;
     const spread = role === 'leader' ? leaderSpread : followerSpread;
@@ -226,7 +256,7 @@ export function StatsScreen({ store }: StatsScreenProps) {
                   <th className="matrix-corner">Лидер \ Фоловер</th>
                   {matrixFollowers.map((follower) => (
                     <th key={follower.id} title={follower.name}>
-                      {follower.name.split(' ')[0]}
+                      {follower.name}
                     </th>
                   ))}
                   <th>Σ</th>
@@ -244,7 +274,7 @@ export function StatsScreen({ store }: StatsScreenProps) {
                         const value = stats.pairCounts.get(pairKey(leader.id, follower.id)) ?? 0;
                         rowTotal += value;
                         return (
-                          <td key={follower.id} className={value === 0 ? 'zero' : undefined}>
+                          <td key={follower.id} className={matrixCellClass(value, columnMedians.get(follower.id) ?? 0)}>
                             {value === 0 ? '·' : value}
                           </td>
                         );
@@ -274,7 +304,12 @@ export function StatsScreen({ store }: StatsScreenProps) {
             </table>
           </div>
         )}
-        <p className="table-hint">Число совместных танцев за вечер. «·» — ещё не танцевали.</p>
+        <p className="table-hint">
+          Число совместных танцев за вечер, подсветка по столбцу фоловера:{' '}
+          <span className="legend-chip cell-green">чаще медианы</span>{' '}
+          <span className="legend-chip cell-blue">медиана</span>{' '}
+          <span className="legend-chip cell-red">реже медианы / не танцевали</span>
+        </p>
       </details>
 
       <details className="card details-card">
@@ -292,20 +327,32 @@ export function StatsScreen({ store }: StatsScreenProps) {
                   <strong>Раунд {round.number}</strong>
                   <span>{formatTime(round.confirmedAt)}</span>
                 </div>
-                <p className="history-pairs">
-                  {round.pairs
-                    .map((pair) => {
-                      const leader = state.participants.find((p) => p.id === pair.leaderId);
-                      const follower = state.participants.find((p) => p.id === pair.followerId);
-                      return `${leader?.name ?? '—'} × ${follower?.name ?? '—'}`;
-                    })
-                    .join(' · ')}
-                </p>
+                <ul className="history-pairs">
+                  {round.pairs.map((pair, position) => {
+                    const leader = state.participants.find((p) => p.id === pair.leaderId);
+                    const follower = state.participants.find((p) => p.id === pair.followerId);
+                    return (
+                      <li key={`${pair.leaderId}-${pair.followerId}`}>
+                        <span className="history-pos">{position + 1}.</span>{' '}
+                        {numbers.leaderNo.get(pair.leaderId) ?? '?'} {leader?.name ?? '—'} ×{' '}
+                        {numbers.followerNo.get(pair.followerId) ?? '?'} {follower?.name ?? '—'}
+                      </li>
+                    );
+                  })}
+                </ul>
                 {round.skipIds.length > 0 ? (
                   <p className="history-skips">
                     Пропускали:{' '}
                     {round.skipIds
-                      .map((id) => state.participants.find((p) => p.id === id)?.name ?? '—')
+                      .map((id) => {
+                        const person = state.participants.find((p) => p.id === id);
+                        if (!person) return '—';
+                        const no =
+                          person.role === 'leader'
+                            ? numbers.leaderNo.get(id)
+                            : numbers.followerNo.get(id);
+                        return `${no ?? '?'} ${person.name}`;
+                      })
                       .join(', ')}
                   </p>
                 ) : null}

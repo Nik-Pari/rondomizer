@@ -17,11 +17,15 @@ export interface Participant {
   createdAt: number;
   /** Номер раунда, с которого участник впервые стал активен. */
   joinedRound: number;
+  /** С какого раунда считать текущий круг (ставится при смене роли). */
+  circleResetRound?: number;
 }
 
 export interface Pair {
   leaderId: string;
   followerId: string;
+  /** Момент подтверждения пары (частичное подтверждение черновика); null — не подтверждена. */
+  confirmedAt?: number | null;
 }
 
 export interface Round {
@@ -31,7 +35,7 @@ export interface Round {
   /** Снимок активных участников на момент генерации раунда. */
   activeIds: string[];
   generatedAt: number;
-  /** null — раунд ещё не подтверждён (черновик). */
+  /** null — раунд ещё не подтверждён (черновик); ставится, когда подтверждены все пары. */
   confirmedAt: number | null;
   warnings: string[];
 }

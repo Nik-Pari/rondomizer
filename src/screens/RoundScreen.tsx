@@ -14,6 +14,7 @@ import {
   IconTrash,
   IconUndo,
   IconUsers,
+  IconX,
 } from '../components/Icons';
 import { LogoMark } from '../components/Icons';
 import { Modal } from '../components/Modal';
@@ -33,6 +34,7 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
 
   const byId = useMemo(
     () => new Map(state.participants.map((participant) => [participant.id, participant])),
@@ -42,6 +44,7 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
   useEffect(() => {
     setEditing(false);
     setSelected(null);
+    setPicked(new Set());
   }, [pending?.number]);
 
   const warnings = useMemo(() => {
@@ -56,6 +59,28 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
 
   const canGenerate = leaders.length > 0 && followers.length > 0;
   const canConfirm = Boolean(pending && pending.pairs.length > 0 && pendingErrors.length === 0);
+  const confirmedCount = pending?.pairs.filter((p) => p.confirmedAt != null).length ?? 0;
+  const totalPairs = pending?.pairs.length ?? 0;
+
+  const togglePair = (index: number) => {
+    const pair = pending?.pairs[index];
+    if (!pair || pair.confirmedAt != null) return;
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+
+  const confirmPressed = () => {
+    if (picked.size > 0) {
+      store.confirmPairsAt([...picked]);
+      setPicked(new Set());
+    } else {
+      store.confirm();
+    }
+  };
 
   const selectPerson = (id: string) => {
     if (!pending) return;
@@ -80,10 +105,6 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
     const updated = swapInRound(state, pending, selected, id);
     store.editPending(updated);
     setSelected(null);
-  };
-
-  const confirmRound = () => {
-    store.confirm();
   };
 
   const requestUndo = async () => {
@@ -174,6 +195,9 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
             <p className="screen-sub">
               {leaders.length} {plural(leaders.length, 'лидер', 'лидера', 'лидеров')} ·{' '}
               {followers.length} {plural(followers.length, 'фоловер', 'фоловера', 'фоловеров')}
+              {confirmedCount > 0
+                ? ` · подтверждено ${confirmedCount} из ${totalPairs}`
+                : ''}
             </p>
           </div>
           <button
@@ -193,11 +217,20 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
             <IconShuffle size={18} />
             <span>
               Нажмите на двух участников <strong>одной роли</strong>, чтобы поменять их местами: пару с
-              парой или пару с пропуском.
+              парой или пару с пропуском. Крестик у пары — отправить обоих в пропуск. Подтверждённые
+              пары не двигаются.
               {selected ? ' Первый выбран — выберите второго.' : ''}
             </span>
           </div>
-        ) : null}
+        ) : (
+          <div className="notice notice-info edit-notice">
+            <IconCheck size={18} />
+            <span>
+              Нажимайте на пары, которые станцевали (можно несколько), затем нажмите{' '}
+              <strong>«Подтвердить»</strong>. Когда будут подтверждены все пары, раунд завершится.
+            </span>
+          </div>
+        )}
 
         {warnings.length > 0 ? (
           <div className="notice notice-warn">
@@ -224,22 +257,59 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
           </div>
         ) : (
           <div className="pair-list">
-            {pending.pairs.map((pair, index) => (
-              <div className="pair-card" key={`${index}-${pair.leaderId}-${pair.followerId}`}>
-                <span className="pair-index">{String(index + 1).padStart(2, '0')}</span>
-                <div className="pair-side">
-                  <span className="pair-role">Лидер</span>
-                  {renderPerson(pair.leaderId, 'leader')}
+            {pending.pairs.map((pair, index) => {
+              const isConfirmed = pair.confirmedAt != null;
+              const classes = ['pair-card'];
+              if (isConfirmed) classes.push('confirmed');
+              if (picked.has(index)) classes.push('picked');
+              if (!editing) classes.push('selectable');
+              return (
+                <div
+                  key={`${index}-${pair.leaderId}-${pair.followerId}`}
+                  className={classes.join(' ')}
+                  role={editing || isConfirmed ? undefined : 'button'}
+                  tabIndex={editing || isConfirmed ? undefined : 0}
+                  aria-pressed={editing || isConfirmed ? undefined : picked.has(index)}
+                  onClick={editing || isConfirmed ? undefined : () => togglePair(index)}
+                  onKeyDown={
+                    editing || isConfirmed
+                      ? undefined
+                      : (event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            togglePair(index);
+                          }
+                        }
+                  }
+                >
+                  <span className="pair-index">
+                    {isConfirmed ? <IconCheck size={16} /> : String(index + 1).padStart(2, '0')}
+                  </span>
+                  <div className="pair-side">
+                    <span className="pair-role">Лидер</span>
+                    {renderPerson(pair.leaderId, 'leader')}
+                  </div>
+                  <span className="pair-x" aria-hidden="true">
+                    ×
+                  </span>
+                  <div className="pair-side">
+                    <span className="pair-role">Фоловер</span>
+                    {renderPerson(pair.followerId, 'follower')}
+                  </div>
+                  {editing && !isConfirmed ? (
+                    <button
+                      type="button"
+                      className="pair-skip-btn"
+                      title="Отправить обоих в пропуск"
+                      aria-label="Отправить обоих в пропуск"
+                      onClick={() => store.pairToSkip(index)}
+                    >
+                      <IconX size={16} />
+                    </button>
+                  ) : null}
                 </div>
-                <span className="pair-x" aria-hidden="true">
-                  ×
-                </span>
-                <div className="pair-side">
-                  <span className="pair-role">Фоловер</span>
-                  {renderPerson(pair.followerId, 'follower')}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -281,11 +351,15 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
           <button
             type="button"
             className="btn btn-primary btn-lg btn-block"
-            onClick={confirmRound}
+            onClick={confirmPressed}
             disabled={!canConfirm}
           >
             <IconCheck size={22} />
-            Подтвердить раунд
+            {picked.size > 0
+              ? `Подтвердить выбранное · ${picked.size}`
+              : confirmedCount > 0
+                ? `Подтвердить остальные · ${totalPairs - confirmedCount}`
+                : 'Подтвердить раунд'}
           </button>
           <div className="action-row">
             <button
@@ -306,7 +380,7 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
               disabled={pending.pairs.length === 0}
             >
               <IconEye size={18} />
-              Показать
+              На большой экран
             </button>
             <button
               type="button"
@@ -402,7 +476,7 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
           disabled={!canGenerate}
         >
           <IconShuffle size={22} />
-          {state.history.length === 0 ? 'Составить первый раунд' : 'Составить пары'}
+          {state.history.length === 0 ? 'Да начнутся Танцы! 💃🕺' : 'Составить пары'}
         </button>
       </section>
 

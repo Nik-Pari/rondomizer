@@ -1,6 +1,5 @@
 import {
   type AppState,
-  type CircleMap,
   type Participant,
   type ParticipantStatus,
   type Role,
@@ -24,16 +23,6 @@ function finish(state: AppState, pendingDiscarded: boolean, completed: Participa
   return { state, pendingDiscarded, completed };
 }
 
-function withCircles(state: AppState): CircleMap {
-  const circles: CircleMap = {};
-  for (const p of state.participants) {
-    circles[p.id] = state.circles[p.id]
-      ? { partners: [...state.circles[p.id].partners], number: state.circles[p.id].number }
-      : { partners: [], number: 1 };
-  }
-  return circles;
-}
-
 export function addParticipant(
   state: AppState,
   name: string,
@@ -50,18 +39,14 @@ export function addParticipant(
     createdAt: now,
     joinedRound: state.nextRoundNumber,
   };
-  const circles = withCircles(state);
-  circles[participant.id] = { partners: [], number: 1 };
-  return finish(
-    {
-      ...state,
-      participants: [...state.participants, participant],
-      circles,
-      pending: null,
-      updatedAt: now,
-    },
-    state.pending !== null,
-  );
+  const next: AppState = {
+    ...state,
+    participants: [...state.participants, participant],
+    pending: null,
+    updatedAt: now,
+  };
+  const reconciled = reconcileCircles(next, now);
+  return finish(reconciled.state, state.pending !== null, reconciled.completed);
 }
 
 export function addParticipants(
@@ -72,30 +57,20 @@ export function addParticipants(
 ): RosterChange {
   const cleaned = names.map((n) => n.trim().slice(0, 80)).filter(Boolean);
   if (cleaned.length === 0) return finish(state, false);
-  const circles = withCircles(state);
   const participants = [...state.participants];
   for (const name of cleaned) {
-    const participant: Participant = {
+    participants.push({
       id: createId(),
       name,
       role,
       status: 'active',
       createdAt: now,
       joinedRound: state.nextRoundNumber,
-    };
-    participants.push(participant);
-    circles[participant.id] = { partners: [], number: 1 };
+    });
   }
-  return finish(
-    {
-      ...state,
-      participants,
-      circles,
-      pending: null,
-      updatedAt: now,
-    },
-    state.pending !== null,
-  );
+  const next: AppState = { ...state, participants, pending: null, updatedAt: now };
+  const reconciled = reconcileCircles(next, now);
+  return finish(reconciled.state, state.pending !== null, reconciled.completed);
 }
 
 export function renameParticipant(state: AppState, id: string, name: string, now: number = Date.now()): AppState {
@@ -128,15 +103,11 @@ export function setParticipantRole(state: AppState, id: string, role: Role, now:
   const target = state.participants.find((p) => p.id === id);
   if (!target || target.role === role) return finish(state, false);
 
-  const circles = withCircles(state);
-  circles[id] = { partners: [], number: 1 };
-  for (const [otherId, circle] of Object.entries(circles)) {
-    if (otherId === id) continue;
-    circle.partners = circle.partners.filter((p) => p !== id);
-  }
-
-  const participants = state.participants.map((p) => (p.id === id ? { ...p, role } : p));
-  const next: AppState = { ...state, participants, circles, pending: null, updatedAt: now };
+  // Круг после смены роли считается заново, начиная с текущего раунда.
+  const participants = state.participants.map((p) =>
+    p.id === id ? { ...p, role, circleResetRound: state.nextRoundNumber } : p,
+  );
+  const next: AppState = { ...state, participants, pending: null, updatedAt: now };
   const reconciled = reconcileCircles(next, now);
   return finish(reconciled.state, state.pending !== null, reconciled.completed);
 }
@@ -144,14 +115,8 @@ export function setParticipantRole(state: AppState, id: string, role: Role, now:
 export function deleteParticipant(state: AppState, id: string, now: number = Date.now()): RosterChange {
   if (!state.participants.some((p) => p.id === id)) return finish(state, false);
 
-  const circles = withCircles(state);
-  delete circles[id];
-  for (const circle of Object.values(circles)) {
-    circle.partners = circle.partners.filter((p) => p !== id);
-  }
-
   const participants = state.participants.filter((p) => p.id !== id);
-  const next: AppState = { ...state, participants, circles, pending: null, updatedAt: now };
+  const next: AppState = { ...state, participants, pending: null, updatedAt: now };
   const reconciled = reconcileCircles(next, now);
   return finish(reconciled.state, state.pending !== null, reconciled.completed);
 }

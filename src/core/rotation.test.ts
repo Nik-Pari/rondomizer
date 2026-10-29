@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   confirmRound,
+  confirmPairs,
+  deriveCircles,
   emptyAppState,
   generateRound,
+  movePairToSkip,
   reconcileCircles,
   setPending,
   startNewEvening,
@@ -11,6 +14,7 @@ import {
   validateRound,
 } from './rotation';
 import { computeStats } from './stats';
+import type { AppState, Round } from './types';
 import {
   activeIds,
   addPerson,
@@ -391,5 +395,120 @@ describe('первый танец вечера', () => {
       'Семён — Марина',
       'Георг — Женя',
     ]);
+  });
+});
+
+describe('частичное подтверждение раунда', () => {
+  it('confirmPairs: частичное подтверждение оставляет черновик с отметками', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3'], ['Ф1', 'Ф2', 'Ф3']);
+    const round = generateRound(state, 1000);
+    const first = confirmPairs(state, round, [0, 2], 1100);
+    expect(first.state.pending).not.toBeNull();
+    expect(first.state.history).toHaveLength(0);
+    expect(first.state.pending!.pairs[0].confirmedAt).toBe(1100);
+    expect(first.state.pending!.pairs[2].confirmedAt).toBe(1100);
+    expect(first.state.pending!.pairs[1].confirmedAt == null).toBe(true);
+    expect(first.state.pending!.confirmedAt).toBeNull();
+  });
+
+  it('confirmPairs: все пары подтверждены — раунд уходит в историю', () => {
+    const state = makeState(['Л1', 'Л2'], ['Ф1', 'Ф2']);
+    const round = generateRound(state, 1000);
+    const first = confirmPairs(state, round, [0], 1100);
+    const second = confirmPairs(first.state, first.state.pending!, [1], 1200);
+    expect(second.state.pending).toBeNull();
+    expect(second.state.history).toHaveLength(1);
+    const saved = second.state.history[0];
+    expect(saved.confirmedAt).toBe(1200);
+    expect(saved.pairs[0].confirmedAt).toBe(1100);
+    expect(saved.pairs[1].confirmedAt).toBe(1200);
+  });
+
+  it('movePairToSkip: неподтверждённая пара возвращается в пропуск', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3'], ['Ф1', 'Ф2']);
+    const round = generateRound(state, 1000);
+    const moved = movePairToSkip(round, 0);
+    expect(moved.pairs).toHaveLength(round.pairs.length - 1);
+    expect(moved.skipIds).toContain(round.pairs[0].leaderId);
+    expect(moved.skipIds).toContain(round.pairs[0].followerId);
+    const marked: Round = {
+      ...round,
+      pairs: round.pairs.map((p, i) => (i === 0 ? { ...p, confirmedAt: 5 } : p)),
+    };
+    expect(movePairToSkip(marked, 0)).toBe(marked);
+  });
+
+  it('обмен не трогает подтверждённые пары', () => {
+    const state = makeState(['Л1', 'Л2'], ['Ф1', 'Ф2']);
+    const round = generateRound(state, 1000);
+    const marked: Round = {
+      ...round,
+      pairs: round.pairs.map((p, i) => (i === 0 ? { ...p, confirmedAt: 5 } : p)),
+    };
+    const swapped = swapInRound(state, marked, marked.pairs[0].leaderId, marked.pairs[1].leaderId);
+    expect(swapped).toBe(marked);
+  });
+
+  it('обмен достаёт участника из пропуска в неподтверждённую пару', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3'], ['Ф1', 'Ф2']);
+    const round = generateRound(state, 1000);
+    expect(round.skipIds.length).toBeGreaterThan(0);
+    const skipId = round.skipIds[0];
+    const swapped = swapInRound(state, round, skipId, round.pairs[0].leaderId);
+    expect(swapped.skipIds).toContain(round.pairs[0].leaderId);
+    expect(swapped.pairs.some((p) => p.leaderId === skipId)).toBe(true);
+    expect(validateRound(state, swapped)).toEqual([]);
+  });
+});
+
+describe('согласованность кругов', () => {
+  it('загрузка снимка пересчитывает круги и чинит уехавший номер', () => {
+    const result = simulate(
+      makeState(['Л1', 'Л2', 'Л3', 'Л4', 'Л5'], ['Ф1', 'Ф2', 'Ф3', 'Ф4', 'Ф5']),
+      7,
+    );
+    const state = result.state;
+    const victim = byName(state, 'Ф3');
+    const broken: AppState = {
+      ...state,
+      circles: {
+        ...state.circles,
+        [victim.id]: {
+          partners: [],
+          number: Math.max(1, state.circles[victim.id].number - 1),
+        },
+      },
+    };
+    const restored = decodeState(encodeState(broken))!;
+    expect(restored).not.toBeNull();
+    const numbers = new Set(restored.participants.map((p) => restored.circles[p.id].number));
+    expect(numbers.size).toBe(1);
+    expect(restored.circles[victim.id].number).toBe(state.circles[victim.id].number);
+  });
+
+  it('после ухода и возврата круги равны deriveCircles', () => {
+    let state = simulate(makeState(['Л1', 'Л2', 'Л3'], ['Ф1', 'Ф2', 'Ф3']), 3).state;
+    const away = byName(state, 'Л2');
+    state = setParticipantStatus(state, away.id, 'away').state;
+    state = simulate(state, 2).state;
+    state = setParticipantStatus(state, away.id, 'active').state;
+    expect(state.circles).toEqual(deriveCircles(state));
+  });
+});
+
+describe('справедливость пропусков', () => {
+  it('никто не пропускает два раунда подряд, разница пропусков ≤ 1', () => {
+    const result = simulate(
+      makeState(['Л1', 'Л2', 'Л3', 'Л4', 'Л5', 'Л6'], ['Ф1', 'Ф2', 'Ф3', 'Ф4', 'Ф5']),
+      12,
+    );
+    for (const m of result.metrics) {
+      expect(m.consecutiveSkips).toBe(0);
+    }
+    const stats = computeStats(result.state);
+    const values = result.state.participants
+      .filter((p) => p.role === 'leader')
+      .map((p) => stats.byId.get(p.id)!.skips);
+    expect(Math.max(...values) - Math.min(...values)).toBeLessThanOrEqual(1);
   });
 });
