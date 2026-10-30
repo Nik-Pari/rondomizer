@@ -84,6 +84,17 @@ export function IconPlus(props: IconProps) {
   );
 }
 
+/** Пара продолжает танец: уходит наверх следующего набора. */
+export function IconCarry(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5 4h14" />
+      <path d="M12 20V8" />
+      <path d="m7.5 12.5 4.5-4.5 4.5 4.5" />
+    </Svg>
+  );
+}
+
 export function IconX(props: IconProps) {
   return (
     <Svg {...props}>

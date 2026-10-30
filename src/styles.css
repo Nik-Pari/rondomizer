@@ -567,6 +567,76 @@ h2 {
   justify-content: center;
 }
 
+/* Пары остатка: продолжают танец с прошлого набора, порядок не меняется */
+.pair-card.carried {
+  border-color: rgba(255, 122, 89, 0.34);
+  background: linear-gradient(180deg, rgba(255, 122, 89, 0.1), rgba(255, 122, 89, 0.03));
+}
+
+.pair-card.carried.confirmed {
+  border-color: rgba(74, 222, 128, 0.45);
+  background: linear-gradient(180deg, rgba(74, 222, 128, 0.12), rgba(74, 222, 128, 0.04));
+}
+
+.pair-card.carried .pair-index {
+  color: var(--coral-soft);
+}
+
+.pair-card.carried.confirmed .pair-index {
+  color: #4ade80;
+}
+
+/* Отметка «танец закончен» (или 🔒 для остатка) — правый слот карточки */
+.pair-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  color: #4ade80;
+}
+
+.pair-card.picked .pair-status {
+  color: var(--coral-soft);
+}
+
+.pair-status.carry-lock {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.carry-lock {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.section-label {
+  margin: 18px 2px 8px;
+  color: var(--muted-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.section-label:first-child {
+  margin-top: 4px;
+}
+
+.carry-notice .carry-mark {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.btn-accent {
+  border-color: rgba(255, 122, 89, 0.42);
+  background: rgba(255, 122, 89, 0.14);
+  color: var(--coral-soft);
+}
+
+.btn-accent:disabled {
+  opacity: 0.45;
+}
+
 .pair-skip-btn {
   display: inline-flex;
   align-items: center;
@@ -601,9 +671,12 @@ h2 {
 }
 
 .pair-role {
+  align-items: center;
   color: var(--muted-2);
+  display: inline-flex;
   font-size: 9.5px;
   font-weight: 700;
+  gap: 5px;
   letter-spacing: 0.11em;
   text-transform: uppercase;
 }
@@ -2255,7 +2328,7 @@ summary::-webkit-details-marker {
   }
 
   .pair-card {
-    grid-template-columns: 34px minmax(0, 1fr) 22px minmax(0, 1fr);
+    grid-template-columns: 34px minmax(0, 1fr) 22px minmax(0, 1fr) 24px;
     padding: 16px;
   }
 
@@ -2274,7 +2347,7 @@ summary::-webkit-details-marker {
 
 @media (max-width: 380px) {
   .pair-card {
-    grid-template-columns: 22px minmax(0, 1fr) 14px minmax(0, 1fr);
+    grid-template-columns: 22px minmax(0, 1fr) 14px minmax(0, 1fr) 20px;
     gap: 7px;
   }
 

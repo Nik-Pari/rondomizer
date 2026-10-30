@@ -5,8 +5,8 @@ import { swapInRound } from '../core/rotation';
 import { plural } from '../utils';
 import { useUi } from '../ui';
 import {
+  IconCarry,
   IconCheck,
-  IconEye,
   IconMore,
   IconPlus,
   IconRefresh,
@@ -21,12 +21,11 @@ import { Modal } from '../components/Modal';
 
 interface RoundScreenProps {
   store: AppStore;
-  onShowPresentation: () => void;
   onGoPeople: () => void;
 }
 
-export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScreenProps) {
-  const { state, stats, leaders, followers, pendingErrors } = store;
+export function RoundScreen({ store, onGoPeople }: RoundScreenProps) {
+  const { state, stats, leaders, followers, pendingErrors, carryCount } = store;
   const { confirm, notify } = useUi();
   const pending = state.pending;
   const lastRound = state.history[state.history.length - 1] ?? null;
@@ -61,6 +60,18 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
   const canConfirm = Boolean(pending && pending.pairs.length > 0 && pendingErrors.length === 0);
   const confirmedCount = pending?.pairs.filter((p) => p.confirmedAt != null).length ?? 0;
   const totalPairs = pending?.pairs.length ?? 0;
+  /**
+   * Остаток — всё, что не отмечено станцованным: и перенесённые сверху пары, и новые,
+   * которые ещё не дотанцевали. Отметив пару, организатор заканчивает её танец.
+   */
+  const carryIdx = pending
+    ? pending.pairs
+        .map((pair, index) => ({ pair, index }))
+        .filter(({ pair, index }) => pair.confirmedAt == null && !picked.has(index))
+        .map(({ index }) => index)
+    : [];
+  const canCarryOver = Boolean(pending) && !editing && carryIdx.length > 0 && carryIdx.length < totalPairs;
+  const canMarkAll = pending ? pending.pairs.some((pair) => pair.confirmedAt == null) : false;
 
   const togglePair = (index: number) => {
     const pair = pending?.pairs[index];
@@ -74,12 +85,31 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
   };
 
   const confirmPressed = () => {
-    if (picked.size > 0) {
-      store.confirmPairsAt([...picked]);
+    if (picked.size > 0 && picked.size < totalPairs) {
+      store.markPairsAt([...picked]);
       setPicked(new Set());
     } else {
       store.confirm();
     }
+  };
+
+  const carryPressed = () => {
+    if (!pending) return;
+    const carry = carryIdx.map((index) => pending.pairs[index]);
+    if (carry.length === 0 || carry.length >= pending.pairs.length) {
+      notify('Оставить на продолжение можно не все пары сразу', 'warn');
+      return;
+    }
+    store.carryOver(carry);
+    setPicked(new Set());
+  };
+
+  /** Отметить станцованными вообще все пары — следующий набор собирается без остатка. */
+  const markAll = () => {
+    if (!pending) return;
+    setMenuOpen(false);
+    store.markPairsAt(pending.pairs.map((_, index) => index));
+    setPicked(new Set());
   };
 
   const selectPerson = (id: string) => {
@@ -144,6 +174,18 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
     store.discard();
   };
 
+  const requestClearCarry = async () => {
+    const ok = await confirm({
+      title: 'Снять остаток?',
+      text: 'Перенесённые пары вычеркиваются из этого танца — оба участника считаются пропустившими.',
+      confirmLabel: 'Снять остаток',
+      danger: true,
+    });
+    if (!ok) return;
+    setMenuOpen(false);
+    store.clearCarryOver();
+  };
+
   const renderPerson = (id: string, role: Role) => {
     const person = byId.get(id);
     const name = person?.name ?? '—';
@@ -179,7 +221,7 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
         <div className="hint-list">
           <div><strong>1.</strong> Внесите людей и укажите роли.</div>
           <div><strong>2.</strong> Нажмите «Составить пары».</div>
-          <div><strong>3.</strong> Покажите группе и подтвердите раунд.</div>
+          <div><strong>3.</strong> Подтвердите раунд — счётчики обновятся.</div>
         </div>
       </section>
     );
@@ -195,30 +237,34 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
             <p className="screen-sub">
               {leaders.length} {plural(leaders.length, 'лидер', 'лидера', 'лидеров')} ·{' '}
               {followers.length} {plural(followers.length, 'фоловер', 'фоловера', 'фоловеров')}
+              {carryCount > 0
+                ? ` · остаток ${carryCount} ${plural(carryCount, 'пара', 'пары', 'пар')}`
+                : ''}
               {confirmedCount > 0
                 ? ` · подтверждено ${confirmedCount} из ${totalPairs}`
                 : ''}
             </p>
           </div>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={onShowPresentation}
-            aria-label="Показать раунд группе"
-            title="Показать группе"
-            disabled={pending.pairs.length === 0}
-          >
-            <IconEye size={24} />
-          </button>
         </div>
 
-        {editing ? (
+        {carryCount > 0 ? (
+          <div className="notice notice-info carry-notice">
+            <span className="carry-mark" aria-hidden="true">
+              🔒
+            </span>
+            <span>
+              <strong>{carryCount}</strong>{' '}
+              {plural(carryCount, 'пара продолжает', 'пары продолжают', 'пар продолжают')} этот танец
+              с прошлого набора: порядок этих пар не меняется. Нажмите на пару, когда её танец
+              закончен, — она отметится как станцованная и больше не перенесётся.
+            </span>
+          </div>
+        ) : editing ? (
           <div className="notice notice-info edit-notice">
             <IconShuffle size={18} />
             <span>
               Нажмите на двух участников <strong>одной роли</strong>, чтобы поменять их местами: пару с
-              парой или пару с пропуском. Крестик у пары — отправить обоих в пропуск. Подтверждённые
-              пары не двигаются.
+              парой или пару с пропуском. Крестик у пары — отправить обоих в пропуск.
               {selected ? ' Первый выбран — выберите второго.' : ''}
             </span>
           </div>
@@ -226,8 +272,9 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
           <div className="notice notice-info edit-notice">
             <IconCheck size={18} />
             <span>
-              Нажимайте на пары, которые станцевали (можно несколько), затем нажмите{' '}
-              <strong>«Подтвердить»</strong>. Когда будут подтверждены все пары, раунд завершится.
+              Отмечайте пары, которые станцевали. «Подтвердить раунд» закрывает весь танец, а{' '}
+              <strong>«Добавить пары»</strong> закрывает его с остатком: отмеченные пары уходят в
+              историю, неотмеченные продолжат танец первыми в следующем наборе.
             </span>
           </div>
         )}
@@ -256,23 +303,28 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
             </button>
           </div>
         ) : (
-          <div className="pair-list">
-            {pending.pairs.map((pair, index) => {
-              const isConfirmed = pair.confirmedAt != null;
-              const classes = ['pair-card'];
-              if (isConfirmed) classes.push('confirmed');
-              if (picked.has(index)) classes.push('picked');
-              if (!editing) classes.push('selectable');
-              return (
+          <>
+            {carryCount > 0 ? (
+              <p className="section-label">
+                Продолжают танец · {carryCount} {plural(carryCount, 'пара', 'пары', 'пар')} с прошлого
+                набора
+              </p>
+            ) : null}
+            <div className="pair-list">
+              {pending.pairs.slice(0, carryCount).map((pair, index) => (
                 <div
-                  key={`${index}-${pair.leaderId}-${pair.followerId}`}
-                  className={classes.join(' ')}
-                  role={editing || isConfirmed ? undefined : 'button'}
-                  tabIndex={editing || isConfirmed ? undefined : 0}
-                  aria-pressed={editing || isConfirmed ? undefined : picked.has(index)}
-                  onClick={editing || isConfirmed ? undefined : () => togglePair(index)}
+                  key={`carry-${index}-${pair.leaderId}-${pair.followerId}`}
+                  className={
+                    ['pair-card', 'carried', pair.confirmedAt != null ? 'confirmed' : picked.has(index) ? 'picked' : ''].
+                      filter(Boolean)
+                      .join(' ')
+                  }
+                  role={editing ? undefined : 'button'}
+                  tabIndex={editing ? undefined : 0}
+                  aria-pressed={editing ? undefined : picked.has(index)}
+                  onClick={editing ? undefined : () => togglePair(index)}
                   onKeyDown={
-                    editing || isConfirmed
+                    editing
                       ? undefined
                       : (event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
@@ -283,34 +335,105 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
                   }
                 >
                   <span className="pair-index">
-                    {isConfirmed ? <IconCheck size={16} /> : String(index + 1).padStart(2, '0')}
+                    {String(index + 1).padStart(2, '0')}
                   </span>
                   <div className="pair-side">
-                    <span className="pair-role">Лидер</span>
+                    <span className="pair-role">
+                      <span className="role-dot leader" aria-hidden="true" />
+                      Лидер
+                    </span>
                     {renderPerson(pair.leaderId, 'leader')}
                   </div>
                   <span className="pair-x" aria-hidden="true">
                     ×
                   </span>
                   <div className="pair-side">
-                    <span className="pair-role">Фоловер</span>
+                    <span className="pair-role">
+                      <span className="role-dot follower" aria-hidden="true" />
+                      Фоловер
+                    </span>
                     {renderPerson(pair.followerId, 'follower')}
                   </div>
-                  {editing && !isConfirmed ? (
-                    <button
-                      type="button"
-                      className="pair-skip-btn"
-                      title="Отправить обоих в пропуск"
-                      aria-label="Отправить обоих в пропуск"
-                      onClick={() => store.pairToSkip(index)}
-                    >
-                      <IconX size={16} />
-                    </button>
-                  ) : null}
+                  {pair.confirmedAt != null || picked.has(index) ? (
+                    <span className="pair-status" aria-hidden="true">
+                      <IconCheck size={16} />
+                    </span>
+                  ) : (
+                    <span className="pair-status carry-lock" aria-hidden="true">
+                      🔒
+                    </span>
+                  )}
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+            {carryCount > 0 && carryCount < pending.pairs.length ? (
+              <p className="section-label">Новые пары этого танца</p>
+            ) : null}
+            <div className="pair-list">
+              {pending.pairs.slice(carryCount).map((pair, offset) => {
+                const index = offset + carryCount;
+                const isConfirmed = pair.confirmedAt != null;
+                const classes = ['pair-card'];
+                if (isConfirmed) classes.push('confirmed');
+                if (picked.has(index)) classes.push('picked');
+                if (!editing) classes.push('selectable');
+                return (
+                  <div
+                    key={`${index}-${pair.leaderId}-${pair.followerId}`}
+                    className={classes.join(' ')}
+                    role={editing || isConfirmed ? undefined : 'button'}
+                    tabIndex={editing || isConfirmed ? undefined : 0}
+                    aria-pressed={editing || isConfirmed ? undefined : picked.has(index)}
+                    onClick={editing || isConfirmed ? undefined : () => togglePair(index)}
+                    onKeyDown={
+                      editing || isConfirmed
+                        ? undefined
+                        : (event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              togglePair(index);
+                            }
+                          }
+                    }
+                  >
+                    <span className="pair-index">{String(index + 1).padStart(2, '0')}</span>
+                    <div className="pair-side">
+                      <span className="pair-role">
+                        <span className="role-dot leader" aria-hidden="true" />
+                        Лидер
+                      </span>
+                      {renderPerson(pair.leaderId, 'leader')}
+                    </div>
+                    <span className="pair-x" aria-hidden="true">
+                      ×
+                    </span>
+                    <div className="pair-side">
+                      <span className="pair-role">
+                        <span className="role-dot follower" aria-hidden="true" />
+                        Фоловер
+                      </span>
+                      {renderPerson(pair.followerId, 'follower')}
+                    </div>
+                    {editing && !isConfirmed ? (
+                      <button
+                        type="button"
+                        className="pair-skip-btn"
+                        title="Отправить обоих в пропуск"
+                        aria-label="Отправить обоих в пропуск"
+                        onClick={() => store.pairToSkip(index)}
+                      >
+                        <IconX size={16} />
+                      </button>
+                    ) : isConfirmed || picked.has(index) ? (
+                      <span className="pair-status" aria-hidden="true">
+                        <IconCheck size={16} />
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
 
         <section className="skip-block">
@@ -355,11 +478,9 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
             disabled={!canConfirm}
           >
             <IconCheck size={22} />
-            {picked.size > 0
-              ? `Подтвердить выбранное · ${picked.size}`
-              : confirmedCount > 0
-                ? `Подтвердить остальные · ${totalPairs - confirmedCount}`
-                : 'Подтвердить раунд'}
+            {picked.size > 0 && picked.size < totalPairs
+              ? `Подтвердить выбранные · ${picked.size}`
+              : 'Подтвердить раунд'}
           </button>
           <div className="action-row">
             <button
@@ -368,6 +489,7 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
               onClick={() => {
                 setEditing((value) => !value);
                 setSelected(null);
+                setPicked(new Set());
               }}
             >
               <IconShuffle size={18} />
@@ -375,12 +497,14 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
             </button>
             <button
               type="button"
-              className="btn btn-soft"
-              onClick={onShowPresentation}
-              disabled={pending.pairs.length === 0}
+              className="btn btn-soft btn-accent"
+              onClick={carryPressed}
+              disabled={!canCarryOver}
+              title={`Закрыть танец: ${carryIdx.length} ${plural(carryIdx.length, 'пара продолжит', 'пары продолжат', 'пар продолжат')} первыми в следующем наборе`}
+              aria-label={`Добавить пары, останется ${carryIdx.length}`}
             >
-              <IconEye size={18} />
-              На большой экран
+              <IconCarry size={18} />
+              Добавить пары
             </button>
             <button
               type="button"
@@ -396,6 +520,24 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
         {menuOpen ? (
           <Modal title="Действия с раундом" onClose={() => setMenuOpen(false)}>
             <div className="menu-list">
+              {canMarkAll ? (
+                <button type="button" className="menu-row" onClick={markAll}>
+                  <IconCheck size={20} />
+                  <span>
+                    <strong>Отметить все пары</strong>
+                    <small>Танец закончен у всех — остатка не будет</small>
+                  </span>
+                </button>
+              ) : null}
+              {carryCount > 0 ? (
+                <button type="button" className="menu-row danger" onClick={() => void requestClearCarry()}>
+                  <IconX size={20} />
+                  <span>
+                    <strong>Снять остаток</strong>
+                    <small>Перенесённые пары пропускают этот танец</small>
+                  </span>
+                </button>
+              ) : null}
               <button type="button" className="menu-row" onClick={() => void requestRegenerate()}>
                 <IconRefresh size={20} />
                 <span>
@@ -434,17 +576,6 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
             {stats.activeCounts.follower > 0 ? stats.maxDances.follower - stats.minDances.follower : 0}
           </p>
         </div>
-        {lastRound ? (
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={onShowPresentation}
-            aria-label="Показать последний раунд группе"
-            title="Показать группе"
-          >
-            <IconEye size={24} />
-          </button>
-        ) : null}
       </div>
 
       {!canGenerate ? (
@@ -482,8 +613,8 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
 
       {state.history.length === 0 ? (
         <div className="hint-list card">
-          <div><strong>1.</strong> Проверьте, что все активные и роли указаны верно.</div>
-          <div><strong>2.</strong> Нажмите «Составить пары» и покажите экран группе.</div>
+          <div><strong>1.</strong> Проверьте, что все активны и роли указаны верно.</div>
+          <div><strong>2.</strong> Нажмите «Составить пары» и покажите набор группе.</div>
           <div><strong>3.</strong> Подтвердите раунд — счётчики обновятся.</div>
         </div>
       ) : null}
@@ -498,8 +629,9 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
             <span className="badge badge-ok">подтверждён</span>
           </div>
           <div className="last-pairs">
-            {lastRound.pairs.map((pair) => (
+            {lastRound.pairs.map((pair, position) => (
               <div key={`${pair.leaderId}-${pair.followerId}`} className="last-pair">
+                <span className="pair-pos">{position + 1}.</span>
                 <span className="role-dot leader" />
                 <span>{byId.get(pair.leaderId)?.name ?? '—'}</span>
                 <span className="muted">×</span>
@@ -522,3 +654,5 @@ export function RoundScreen({ store, onShowPresentation, onGoPeople }: RoundScre
     </div>
   );
 }
+
+export type { RoundScreenProps };

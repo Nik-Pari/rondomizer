@@ -8,7 +8,6 @@ import { RoundScreen } from './screens/RoundScreen';
 import { PeopleScreen } from './screens/PeopleScreen';
 import { StatsScreen } from './screens/StatsScreen';
 import { MoreScreen } from './screens/MoreScreen';
-import { Presentation } from './components/Presentation';
 import { LogoMark, IconChart, IconDance, IconMore, IconUsers, IconWifiOff } from './components/Icons';
 
 type Tab = 'round' | 'people' | 'stats' | 'more';
@@ -28,12 +27,8 @@ function AppInner() {
   const pwa = usePwa();
 
   const [tab, setTab] = useState<Tab>('round');
-  const [presenting, setPresenting] = useState(false);
   const hashHandled = useRef(false);
   const updateNotified = useRef(false);
-
-  const roundToShow =
-    store.state.pending ?? store.state.history[store.state.history.length - 1] ?? null;
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -92,21 +87,6 @@ function AppInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const openPresentation = () => {
-    if (!roundToShow) return;
-    setPresenting(true);
-    if (document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen().catch(() => undefined);
-    }
-  };
-
-  const closePresentation = () => {
-    setPresenting(false);
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => undefined);
-    }
-  };
-
   const activeDraft = store.state.pending;
 
   return (
@@ -137,11 +117,7 @@ function AppInner() {
 
         <main className="content">
           {tab === 'round' ? (
-            <RoundScreen
-              store={store}
-              onShowPresentation={openPresentation}
-              onGoPeople={() => setTab('people')}
-            />
+            <RoundScreen store={store} onGoPeople={() => setTab('people')} />
           ) : null}
           {tab === 'people' ? <PeopleScreen store={store} /> : null}
           {tab === 'stats' ? <StatsScreen store={store} /> : null}
@@ -170,14 +146,6 @@ function AppInner() {
           })}
         </div>
       </nav>
-
-      {presenting && roundToShow ? (
-        <Presentation
-          round={roundToShow}
-          participants={store.state.participants}
-          onClose={closePresentation}
-        />
-      ) : null}
     </>
   );
 }

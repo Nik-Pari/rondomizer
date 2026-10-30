@@ -15,7 +15,7 @@ export const SNAPSHOT_HASH_PREFIX = '#data=';
 export const MAX_QR_URL_LENGTH = 1800;
 
 export interface SnapshotPayload {
-  v: 3;
+  v: 4;
   participants: Participant[];
   history: Round[];
   pending: Round | null;
@@ -27,7 +27,7 @@ export interface SnapshotPayload {
 
 export function toPayload(state: AppState, savedAt: number = Date.now()): SnapshotPayload {
   return {
-    v: 3,
+    v: 4,
     participants: state.participants,
     history: state.history,
     pending: state.pending,
@@ -117,27 +117,37 @@ function parsePair(value: unknown, defaultConfirmedAt: number | null): Pair | nu
   return pair;
 }
 
-function parseRound(value: unknown): Round | null {
+/**
+ * `asDraft` — разбираем черновик: отметки «подтверждена» и момент подтверждения пар сбрасываем,
+ * их хранят только раунды истории. Для черновика важно лишь то, сколько первых пар — остаток.
+ */
+function parseRound(value: unknown, asDraft = false): Round | null {
   if (!isRecord(value)) return null;
   if (typeof value.number !== 'number' || !Number.isFinite(value.number)) return null;
   const roundConfirmedAt = typeof value.confirmedAt === 'number' ? value.confirmedAt : null;
   const pairsRaw = Array.isArray(value.pairs) ? value.pairs : [];
   const pairs: Pair[] = [];
   for (const item of pairsRaw) {
-    const pair = parsePair(item, roundConfirmedAt);
+    const pair = parsePair(item, asDraft ? null : roundConfirmedAt);
     if (pair) pairs.push(pair);
   }
   const stringArray = (input: unknown): string[] =>
     Array.isArray(input) ? input.filter((item): item is string => typeof item === 'string') : [];
-  return {
+  const carryCount =
+    typeof value.carryCount === 'number' && value.carryCount >= 1
+      ? Math.min(Math.round(value.carryCount), pairs.length)
+      : undefined;
+  const round: Round = {
     number: Math.max(1, Math.round(value.number)),
     pairs,
     skipIds: stringArray(value.skipIds),
     activeIds: stringArray(value.activeIds),
     generatedAt: typeof value.generatedAt === 'number' ? value.generatedAt : 0,
-    confirmedAt: roundConfirmedAt,
+    confirmedAt: asDraft ? null : roundConfirmedAt,
     warnings: stringArray(value.warnings),
   };
+  if (carryCount) round.carryCount = carryCount;
+  return round;
 }
 
 function parseCircles(value: unknown, participantIds: Set<string>): CircleMap {
@@ -185,7 +195,8 @@ export function stateFromSnapshot(raw: unknown): AppState | null {
   }
   history.sort((a, b) => a.number - b.number);
 
-  const pending = raw.pending == null ? null : parseRound(raw.pending);
+  // Черновик: пары не должны прийти «уже подтверждёнными», иначе экран стартует в странном состоянии.
+  const pending = raw.pending == null ? null : parseRound(raw.pending, true);
   const circles = parseCircles(raw.circles, ids);
   for (const p of participants) {
     if (!circles[p.id]) circles[p.id] = { partners: [], number: 1 };

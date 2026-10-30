@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   confirmRound,
-  confirmPairs,
+  carryOverPairs,
+  clearCarry,
   emptyAppState,
   generateRound,
+  markPairs,
   movePairToSkip,
   startNewEvening,
   undoLastRound,
@@ -24,6 +26,7 @@ import {
 } from './core/state';
 import type {
   AppState,
+  Pair,
   Participant,
   ParticipantStatus,
   Role,
@@ -59,7 +62,14 @@ export interface AppStore {
   pendingErrors: string[];
   generate: () => void;
   confirm: () => void;
-  confirmPairsAt: (indices: number[]) => void;
+  /** Отметить пары в черновике станцованными (в историю ещё ничего не уходит). */
+  markPairsAt: (indices: number[]) => void;
+  /** Закрыть танец кнопкой «Добавить пары»: переданные пары продолжают его в следующем черновике. */
+  carryOver: (carry: Pair[]) => void;
+  /** Снять остаток: перенесённые пары вычёркиваются из танца, участники — в пропуск. */
+  clearCarryOver: () => void;
+  /** Сколько первых пар черновика перенесены с прошлого танца (остаток). */
+  carryCount: number;
   pairToSkip: (index: number) => void;
   undo: () => void;
   discard: () => void;
@@ -80,6 +90,8 @@ export function useAppStore(notify: Notify): AppStore {
   const storageFailedRef = useRef(false);
 
   const stats = useMemo(() => computeStats(state), [state]);
+  /** Сколько первых пар черновика — остаток с прошлого танца. */
+  const carryCount = state.pending?.carryCount ?? 0;
 
   const leaders = useMemo(
     () => state.participants.filter((p) => p.status === 'active' && p.role === 'leader'),
@@ -152,7 +164,7 @@ export function useAppStore(notify: Notify): AppStore {
     }
   }, [state, notify]);
 
-  const confirmPairsAt = useCallback(
+  const markPairsAt = useCallback(
     (indices: number[]) => {
       const pending = state.pending;
       if (!pending || indices.length === 0) return;
@@ -161,17 +173,40 @@ export function useAppStore(notify: Notify): AppStore {
         notify(errors[0], 'error');
         return;
       }
-      const result = confirmPairs(state, pending, indices);
+      setState(markPairs(state, pending, indices));
+    },
+    [state, notify],
+  );
+
+  const carryOver = useCallback(
+    (carry: Pair[]) => {
+      const pending = state.pending;
+      if (!pending) return;
+      const errors = validateRound(state, pending);
+      if (errors.length > 0) {
+        notify(errors[0], 'error');
+        return;
+      }
+      const result = carryOverPairs(state, pending, carry);
+      if (result.state === state) {
+        notify('Оставить на продолжение можно не все пары сразу', 'warn');
+        return;
+      }
       setState(result.state);
-      if (result.state.pending === null) {
-        notify(`Раунд ${pending.number} подтверждён`, 'success');
-        if (result.completed.length > 0) {
-          notify(`Круг завершён: ${namesLabel(result.completed)}`, 'info');
-        }
+      notify(`Раунд ${pending.number} закрыт, остаток продолжает сверху`, 'success');
+      if (result.completed.length > 0) {
+        notify(`Круг завершён: ${namesLabel(result.completed)}`, 'info');
       }
     },
     [state, notify],
   );
+
+  const clearCarryOver = useCallback(() => {
+    const pending = state.pending;
+    if (!pending || (pending.carryCount ?? 0) === 0) return;
+    setState(clearCarry(state, pending));
+    notify('Остаток снят: эти пары пропускают танец', 'info');
+  }, [state, notify]);
 
   const pairToSkip = useCallback(
     (index: number) => {
@@ -303,7 +338,10 @@ export function useAppStore(notify: Notify): AppStore {
     pendingErrors,
     generate,
     confirm,
-    confirmPairsAt,
+    carryCount,
+    markPairsAt,
+    carryOver,
+    clearCarryOver,
     pairToSkip,
     undo,
     discard,

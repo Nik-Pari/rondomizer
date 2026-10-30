@@ -183,7 +183,10 @@ export function replayCircles(state: AppState, withSkips: boolean): CircleReplay
   }
 
   for (const round of state.history) {
-    for (const pair of round.pairs) {
+    // Первые `carryCount` пар — остаток с прошлого танца: они продолжают уже учтённую встречу,
+    // поэтому в круг добавляем только новые пары.
+    const carried = round.carryCount ?? 0;
+    for (const pair of round.pairs.slice(carried)) {
       const l = acc.get(pair.leaderId);
       const f = acc.get(pair.followerId);
       const lPerson = byId.get(pair.leaderId);
@@ -287,6 +290,35 @@ function skipCost(
 /*  Генерация раунда                                                          */
 /* ------------------------------------------------------------------------- */
 
+/** id участников последней пары предыдущего раунда — «закрывающие» этот танец. */
+function lastRoundTail(state: AppState): Set<string> {
+  const ids = new Set<string>();
+  const last = state.history[state.history.length - 1];
+  const tail = last?.pairs[last.pairs.length - 1];
+  if (tail) {
+    ids.add(tail.leaderId);
+    ids.add(tail.followerId);
+  }
+  return ids;
+}
+
+/**
+ * Порядок пар внутри раунда — это порядок танцев: первая пара начинает, последняя заканчивает.
+ * Поэтому «закрывающих» предыдущий танец не ставим в начало следующего — уводим в конец,
+ * чтобы промежуток между выступлениями был ровным. Ручной override здесь не нужен:
+ * «Добавить пары» переносит пару наверх намеренно, когда так решил организатор.
+ */
+function orderByRoundBoundary(pairs: Pair[], tailIds: Set<string>): Pair[] {
+  if (tailIds.size === 0) return pairs;
+  const head: Pair[] = [];
+  const tail: Pair[] = [];
+  for (const pair of pairs) {
+    if (tailIds.has(pair.leaderId) || tailIds.has(pair.followerId)) tail.push(pair);
+    else head.push(pair);
+  }
+  return [...head, ...tail];
+}
+
 /**
  * Шаг 1 + шаг 2 одним венгерским алгоритмом.
  *
@@ -299,10 +331,25 @@ function skipCost(
  *   3) затем — самые «свежие» и редкие пары.
  * Перебор всех равноценных наборов пропусков не нужен: матрица учитывает
  * качество пар для каждого набора.
+ *
+ * `locked` — пары, перенесённые из предыдущего танца («остаток»). Они уже танцуют этот
+ * танец, поэтому их участники не участвуют в подборе и не могут попасть в пропуск:
+ * матрица строится только на свободных, а сверху результата встают зафиксированные пары.
  */
-export function generateRound(state: AppState, now: number = Date.now()): Round {
-  const leaders = activeParticipants(state).filter((p) => p.role === 'leader');
-  const followers = activeParticipants(state).filter((p) => p.role === 'follower');
+export function generateRound(
+  state: AppState,
+  now: number = Date.now(),
+  locked: Pair[] = [],
+): Round {
+  const active = activeParticipants(state);
+  const lockedIds = new Set<string>();
+  for (const pair of locked) {
+    lockedIds.add(pair.leaderId);
+    lockedIds.add(pair.followerId);
+  }
+  const leaders = active.filter((p) => p.role === 'leader' && !lockedIds.has(p.id));
+  const followers = active.filter((p) => p.role === 'follower' && !lockedIds.has(p.id));
+  const available = active.filter((p) => !lockedIds.has(p.id));
   const roundNumber = state.nextRoundNumber;
   const stats = computeStats(state);
   const replay = replayCircles(state, true);
@@ -310,20 +357,25 @@ export function generateRound(state: AppState, now: number = Date.now()): Round 
     Object.entries(replay.circles).map(([id, c]) => [id, new Set(c.partners)]),
   );
   const warnings: string[] = [];
-  const activeIds = [...leaders, ...followers].map((p) => p.id);
+  const activeIds = active.map((p) => p.id);
 
   const empty = (reason: string[]): Round => ({
     number: roundNumber,
-    pairs: [],
-    skipIds: [...leaders, ...followers].map((p) => p.id),
+    pairs: [...locked],
+    skipIds: available.map((p) => p.id),
     activeIds,
     generatedAt: now,
     confirmedAt: null,
     warnings: [...reason, ...warnings],
+    ...(locked.length > 0 ? { carryCount: locked.length } : {}),
   });
 
-  if (leaders.length === 0 && followers.length === 0) {
+  if (active.length === 0) {
     return empty(['Нет активных участников — добавьте людей на вкладке «Люди».']);
+  }
+  // Перенос занял всю роль — подбирать не из чего, но остаток танцует.
+  if (locked.length > 0 && (leaders.length === 0 || followers.length === 0)) {
+    return empty([]);
   }
   if (leaders.length === 0) {
     return empty(['Нет активных лидеров — танцевать не с кем.']);
@@ -434,12 +486,13 @@ export function generateRound(state: AppState, now: number = Date.now()): Round 
 
   return {
     number: roundNumber,
-    pairs,
+    pairs: [...locked, ...orderByRoundBoundary(pairs, lastRoundTail(state))],
     skipIds,
     activeIds,
     generatedAt: now,
     confirmedAt: null,
     warnings,
+    ...(locked.length > 0 ? { carryCount: locked.length } : {}),
   };
 }
 
@@ -453,6 +506,11 @@ export interface ConfirmResult {
   completed: Participant[];
 }
 
+/**
+ * Закрывает раунд: все его пары считаются станцованными. Если в раунде есть `carryCount`
+ * перенесённых сверху пар — они попадают в историю, но новую встречу не создают
+ * (это тот же танец, уже учтённый предыдущим раундом), см. `replayCircles` и `computeStats`.
+ */
 export function confirmRound(state: AppState, round: Round, now: number = Date.now()): ConfirmResult {
   const before = cloneCircles(state.circles);
   const confirmed: Round = {
@@ -485,34 +543,69 @@ export function confirmRound(state: AppState, round: Round, now: number = Date.n
   };
 }
 
-/**
- * Подтверждает выбранные пары черновика. Если подтверждены все пары — раунд
- * уходит в историю (confirmRound), иначе возвращается обновлённый черновик.
- */
-export function confirmPairs(
+/** Отмечает выбранные пары черновика станцованными (в историю ещё ничего не уходит). */
+export function markPairs(
   state: AppState,
   round: Round,
   indices: number[],
   now: number = Date.now(),
-): ConfirmResult {
+): AppState {
   const selected = new Set(indices);
   const pairs = round.pairs.map((p, i) =>
     selected.has(i) && p.confirmedAt == null ? { ...p, confirmedAt: now } : { ...p },
   );
-  const allConfirmed = pairs.length > 0 && pairs.every((p) => p.confirmedAt != null);
-  const marked: Round = {
-    ...round,
-    pairs,
-    confirmedAt: allConfirmed ? now : null,
-  };
-  if (allConfirmed) return confirmRound(state, marked, now);
-  return { state: setPending(state, marked, now), completed: [] };
+  return setPending(state, { ...round, pairs }, now);
+}
+
+/**
+ * Досрочное завершение танца кнопкой «Добавить пары».
+ *
+ * `carry` — пары, которые продолжают танцевать (не отмечены станцованными). Раунд уходит
+ * в историю целиком, будто прошёл полностью: счётчики танцев и круги обновляются для всех.
+ * Сверху нового черновика встают перенесённые пары, ниже — обычный подбор на свободных.
+ * Возвращает без изменений, если переносить нечего или переносить не остаток, а всё сразу.
+ */
+export function carryOverPairs(
+  state: AppState,
+  round: Round,
+  carry: Pair[],
+  now: number = Date.now(),
+): ConfirmResult {
+  const inRound = new Set(round.pairs.map((p) => pairKey(p.leaderId, p.followerId)));
+  const wanted = new Set(
+    carry
+      .filter((p) => inRound.has(pairKey(p.leaderId, p.followerId)))
+      .map((p) => pairKey(p.leaderId, p.followerId)),
+  );
+  if (wanted.size === 0 || wanted.size >= round.pairs.length) return { state, completed: [] };
+
+  // Порядок остатка сохраняем тот, что был в черновике: перенесённые пары идут сверху.
+  const carried = round.pairs.filter((p) => wanted.has(pairKey(p.leaderId, p.followerId)));
+  const result = confirmRound(state, round, now);
+  const next = generateRound(result.state, now, carried.map((p) => ({ leaderId: p.leaderId, followerId: p.followerId })));
+  return { state: setPending(result.state, next, now), completed: result.completed };
+}
+
+/** Снимает остаток: перенесённые пары вычёркиваются из танца, оба участника идут в пропуск. */
+export function clearCarry(state: AppState, round: Round, now: number = Date.now()): AppState {
+  const carried = round.carryCount ?? 0;
+  if (carried === 0) return state;
+  const pairs = round.pairs.slice(carried).map((p) => ({ ...p }));
+  const skipIds = [...round.skipIds];
+  for (const p of round.pairs.slice(0, carried)) {
+    for (const id of [p.leaderId, p.followerId]) {
+      if (!skipIds.includes(id)) skipIds.push(id);
+    }
+  }
+  const next: Round = { ...round, pairs, skipIds, confirmedAt: null };
+  delete next.carryCount;
+  return setPending(state, next, now);
 }
 
 /** Убирает неподтверждённую пару из раунда: оба участника идут в пропуск. */
 export function movePairToSkip(round: Round, index: number): Round {
   const pair = round.pairs[index];
-  if (!pair || pair.confirmedAt != null) return round;
+  if (!pair || pair.confirmedAt != null || index < (round.carryCount ?? 0)) return round;
   const pairs = round.pairs.filter((_, i) => i !== index).map((p) => ({ ...p }));
   const skipIds = [...round.skipIds];
   for (const id of [pair.leaderId, pair.followerId]) {
@@ -622,8 +715,9 @@ export function swapInRound(state: AppState, round: Round, aId: string, bId: str
   const sb = find(bId);
   if (!sa || !sb) return round;
   if (sa.kind === 'skip' && sb.kind === 'skip') return round;
+  const carried = round.carryCount ?? 0;
   const pairLocked = (slot: Slot): boolean =>
-    slot.kind !== 'skip' && pairs[slot.index].confirmedAt != null;
+    slot.kind !== 'skip' && (slot.index < carried || pairs[slot.index].confirmedAt != null);
   if (pairLocked(sa) || pairLocked(sb)) return round;
 
   const put = (slot: Slot, id: string) => {
@@ -684,5 +778,11 @@ export function discardPending(state: AppState, now: number = Date.now()): AppSt
 }
 
 export function setPending(state: AppState, round: Round, now: number = Date.now()): AppState {
-  return { ...state, pending: { ...round, confirmedAt: null }, updatedAt: now };
+  const pairs = round.pairs.map((p) => ({ ...p }));
+  const pending: Round = { ...round, pairs, confirmedAt: null, warnings: [...round.warnings] };
+  // Черновик помнит, сколько первых пар — остаток с прошлого танца, но не больше, чем пар в списке.
+  const carried = Math.min(pending.carryCount ?? 0, pairs.length);
+  if (carried > 0) pending.carryCount = carried;
+  else delete pending.carryCount;
+  return { ...state, pending, updatedAt: now };
 }

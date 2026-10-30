@@ -72,7 +72,10 @@ export function computeStats(state: AppState, circles: CircleMap = state.circles
   const pairLast = new Map<string, number>();
 
   for (const round of state.history) {
-    for (const pair of round.pairs) {
+    // Первые `carryCount` пар — остаток с прошлого танца: это та же встреча, что уже учтена
+    // в предыдущем раунде, поэтому для статистики «сколько раз танцевали вместе» не удваиваем.
+    const carried = round.carryCount ?? 0;
+    for (const pair of round.pairs.slice(carried)) {
       const leader = byId.get(pair.leaderId);
       const follower = byId.get(pair.followerId);
       if (leader) {
@@ -90,6 +93,18 @@ export function computeStats(state: AppState, circles: CircleMap = state.circles
       const key = pairKey(pair.leaderId, pair.followerId);
       pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
       pairLast.set(key, round.number);
+    }
+    for (const pair of round.pairs.slice(0, carried)) {
+      const leader = byId.get(pair.leaderId);
+      const follower = byId.get(pair.followerId);
+      if (leader) {
+        leader.dances += 1;
+        leader.lastDancedRound = round.number;
+      }
+      if (follower) {
+        follower.dances += 1;
+        follower.lastDancedRound = round.number;
+      }
     }
     for (const id of round.skipIds) {
       const p = byId.get(id);

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  carryOverPairs,
+  clearCarry,
   confirmRound,
-  confirmPairs,
   deriveCircles,
   emptyAppState,
   generateRound,
+  markPairs,
   movePairToSkip,
   reconcileCircles,
   setPending,
@@ -398,32 +400,160 @@ describe('первый танец вечера', () => {
   });
 });
 
-describe('частичное подтверждение раунда', () => {
-  it('confirmPairs: частичное подтверждение оставляет черновик с отметками', () => {
+describe('отметки пар в черновике', () => {
+  it('markPairs: отмечает выбранные пары, раунд остаётся черновиком', () => {
     const state = makeState(['Л1', 'Л2', 'Л3'], ['Ф1', 'Ф2', 'Ф3']);
     const round = generateRound(state, 1000);
-    const first = confirmPairs(state, round, [0, 2], 1100);
-    expect(first.state.pending).not.toBeNull();
-    expect(first.state.history).toHaveLength(0);
-    expect(first.state.pending!.pairs[0].confirmedAt).toBe(1100);
-    expect(first.state.pending!.pairs[2].confirmedAt).toBe(1100);
-    expect(first.state.pending!.pairs[1].confirmedAt == null).toBe(true);
-    expect(first.state.pending!.confirmedAt).toBeNull();
+    const next = markPairs(state, round, [0, 2], 1100);
+    expect(next.pending).not.toBeNull();
+    expect(next.history).toHaveLength(0);
+    expect(next.pending!.pairs[0].confirmedAt).toBe(1100);
+    expect(next.pending!.pairs[2].confirmedAt).toBe(1100);
+    expect(next.pending!.pairs[1].confirmedAt == null).toBe(true);
+    expect(next.pending!.confirmedAt).toBeNull();
   });
 
-  it('confirmPairs: все пары подтверждены — раунд уходит в историю', () => {
+  it('отмеченные пары не меняют круги, пока раунд не подтверждён', () => {
     const state = makeState(['Л1', 'Л2'], ['Ф1', 'Ф2']);
     const round = generateRound(state, 1000);
-    const first = confirmPairs(state, round, [0], 1100);
-    const second = confirmPairs(first.state, first.state.pending!, [1], 1200);
-    expect(second.state.pending).toBeNull();
-    expect(second.state.history).toHaveLength(1);
-    const saved = second.state.history[0];
-    expect(saved.confirmedAt).toBe(1200);
+    const draft = setPending(state, round, 1000);
+    const marked = markPairs(state, round, [0], 1100);
+    expect(deriveCircles(marked)).toEqual(deriveCircles(draft));
+    expect(marked.history).toHaveLength(0);
+  });
+
+  it('все пары отмечены и подтверждены — раунд уходит в историю', () => {
+    const state = makeState(['Л1', 'Л2'], ['Ф1', 'Ф2']);
+    const round = generateRound(state, 1000);
+    const first = markPairs(state, round, [0], 1100);
+    const second = confirmRound(first, first.pending!, 1200).state;
+    expect(second.pending).toBeNull();
+    expect(second.history).toHaveLength(1);
+    const saved = second.history[0];
     expect(saved.pairs[0].confirmedAt).toBe(1100);
     expect(saved.pairs[1].confirmedAt).toBe(1200);
   });
+});
 
+describe('«Добавить пары»: досрочное закрытие танца', () => {
+  it('неотмеченные пары поднимаются наверх следующего черновика', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3', 'Л4'], ['Ф1', 'Ф2', 'Ф3', 'Ф4']);
+    const round = generateRound(state, 1000);
+    // Первая пара дотанцевала, остальные продолжают.
+    const marked = markPairs(state, round, [0], 1100);
+    const carry = marked.pending!.pairs.filter((p) => p.confirmedAt == null);
+    const result = carryOverPairs(marked, marked.pending!, carry, 1200);
+
+    expect(result.state.history).toHaveLength(1);
+    const closed = result.state.history[0];
+    expect(closed.pairs).toHaveLength(round.pairs.length);
+    expect(closed.carryCount ?? 0).toBe(0);
+
+    const next = result.state.pending!;
+    expect(next.number).toBe(2);
+    expect(next.carryCount).toBe(carry.length);
+    // Порядок остатка сохранён и встать должен сверху.
+    expect(next.pairs.slice(0, carry.length).map((p) => [p.leaderId, p.followerId])).toEqual(
+      carry.map((p) => [p.leaderId, p.followerId]),
+    );
+    // Участники остатка не танцуют второй раз в этом же наборе.
+    const freshIds = next.pairs.slice(carry.length).flatMap((p) => [p.leaderId, p.followerId]);
+    for (const id of carry.flatMap((p) => [p.leaderId, p.followerId])) {
+      expect(freshIds).not.toContain(id);
+    }
+    expect(validateRound(result.state, next)).toEqual([]);
+  });
+
+  it('перенесённая пара не создаёт новую встречу, но засчитывается как танец', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3', 'Л4'], ['Ф1', 'Ф2', 'Ф3', 'Ф4']);
+    const round = generateRound(state, 1000);
+    const marked = markPairs(state, round, [0], 1100);
+    const carry = marked.pending!.pairs.filter((p) => p.confirmedAt == null);
+    const carried = carryOverPairs(marked, marked.pending!, carry, 1200).state;
+    const pair = carry[0];
+
+    // Пока остаток только черновик — в истории один закрытый раунд, встреча уже в кругах.
+    expect(carried.history).toHaveLength(1);
+    expect(deriveCircles(carried)[pair.leaderId].partners.includes(pair.followerId)).toBe(true);
+
+    // Закрываем второй набор целиком: остаток считается танцем, но не новой встречей.
+    const done = confirmRound(carried, carried.pending!, 1300).state;
+    expect(done.history[1].carryCount).toBe(carry.length);
+    const stats = computeStats(done, deriveCircles(done));
+    const leader = stats.byId.get(pair.leaderId)!;
+    expect(leader.dances).toBe(2);
+    expect(leader.partners.get(pair.followerId)).toBe(1);
+  });
+
+  it('перенести все пары нельзя — это не остаток', () => {
+    const state = makeState(['Л1', 'Л2'], ['Ф1', 'Ф2']);
+    const round = generateRound(state, 1000);
+    const result = carryOverPairs(state, round, round.pairs, 1100);
+    expect(result.state).toBe(state);
+    expect(result.state.pending).toBeNull();
+  });
+
+  it('остаток снимается: его участники уходят в пропуск', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3', 'Л4'], ['Ф1', 'Ф2', 'Ф3', 'Ф4']);
+    const round = generateRound(state, 1000);
+    const marked = markPairs(state, round, [0], 1100);
+    const carry = marked.pending!.pairs.filter((p) => p.confirmedAt == null);
+    const carried = carryOverPairs(marked, marked.pending!, carry, 1200).state;
+    const draft = carried.pending!;
+    expect(draft.carryCount).toBe(carry.length);
+
+    const cleared = clearCarry(carried, draft, 1300);
+    expect(cleared.pending!.carryCount ?? 0).toBe(0);
+    expect(cleared.pending!.pairs).toHaveLength(draft.pairs.length - carry.length);
+    for (const pair of draft.pairs.slice(0, carry.length)) {
+      expect(cleared.pending!.skipIds).toContain(pair.leaderId);
+      expect(cleared.pending!.skipIds).toContain(pair.followerId);
+    }
+    expect(validateRound(cleared, cleared.pending!)).toEqual([]);
+  });
+
+  it('undo последнего раунда откатывает и остаток', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3', 'Л4'], ['Ф1', 'Ф2', 'Ф3', 'Ф4']);
+    const round = generateRound(state, 1000);
+    const marked = markPairs(state, round, [0], 1100);
+    const carry = marked.pending!.pairs.filter((p) => p.confirmedAt == null);
+    const carried = carryOverPairs(marked, marked.pending!, carry, 1200).state;
+    const undone = undoLastRound(carried, 1400);
+    expect(undone.history).toHaveLength(0);
+    expect(undone.pending).toBeNull();
+  });
+
+  it('участники остатка не попадают в подбор и в пропуски нового набора', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3', 'Л4'], ['Ф1', 'Ф2', 'Ф3']);
+    const round = generateRound(state, 1000);
+    const locked = [round.pairs[0]];
+    const next = generateRound(state, 1100, locked);
+    expect(next.carryCount).toBe(1);
+    expect(next.pairs[0]).toMatchObject({
+      leaderId: locked[0].leaderId,
+      followerId: locked[0].followerId,
+    });
+    const busyIds = new Set(locked.flatMap((p) => [p.leaderId, p.followerId]));
+    for (const id of next.skipIds) expect(busyIds.has(id)).toBe(false);
+    for (const pair of next.pairs.slice(1)) {
+      expect(busyIds.has(pair.leaderId)).toBe(false);
+      expect(busyIds.has(pair.followerId)).toBe(false);
+    }
+  });
+
+  it('закрывающие прошлый танец не открывают следующий', () => {
+    const state = makeState(['Л1', 'Л2', 'Л3'], ['Ф1', 'Ф2', 'Ф3']);
+    const first = generateRound(state, 1000);
+    const confirmed = confirmRound(state, first, 1000).state;
+    const next = generateRound(confirmed, 2000);
+    const tail = first.pairs[first.pairs.length - 1];
+    const head = next.pairs[0];
+    expect(head.leaderId).not.toBe(tail.leaderId);
+    expect(head.followerId).not.toBe(tail.followerId);
+  });
+});
+
+describe('правка черновика вручную', () => {
   it('movePairToSkip: неподтверждённая пара возвращается в пропуск', () => {
     const state = makeState(['Л1', 'Л2', 'Л3'], ['Ф1', 'Ф2']);
     const round = generateRound(state, 1000);

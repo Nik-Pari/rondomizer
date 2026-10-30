@@ -334,8 +334,7 @@ export function StatsScreen({ store }: StatsScreenProps) {
                     return (
                       <li key={`${pair.leaderId}-${pair.followerId}`}>
                         <span className="history-pos">{position + 1}.</span>{' '}
-                        {numbers.leaderNo.get(pair.leaderId) ?? '?'} {leader?.name ?? '—'} ×{' '}
-                        {numbers.followerNo.get(pair.followerId) ?? '?'} {follower?.name ?? '—'}
+                        {leader?.name ?? '—'} × {follower?.name ?? '—'}
                       </li>
                     );
                   })}
